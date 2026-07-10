@@ -1681,23 +1681,28 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
     
     println!("Indexing codebase under workspace: {:?}", workspace_root);
     
-    // We walk the directory tree recursively to discover subdirectories
-    let walker = walkdir::WalkDir::new(&workspace_root)
-        .into_iter()
-        .filter_entry(|e| {
-            let path = e.path();
-            if is_path_ignored(path, &merged_config) {
-                return false;
-            }
-            if let Some(name) = path.file_name() {
-                if name.to_string_lossy().starts_with('.') {
-                    return false;
-                }
-            }
-            true
-        });
+    // Group files by parent directory path
+    let mut dir_files: std::collections::HashMap<PathBuf, Vec<crate::models::CodeReference>> = std::collections::HashMap::new();
+    
+    // Setup gitignore-aware WalkBuilder
+    let mut builder = ignore::WalkBuilder::new(&workspace_root);
+    builder
+        .standard_filters(true)
+        .hidden(true);
         
-    let mut scaffolded_count = 0;
+    // Add custom ignore overrides from config
+    let mut override_builder = ignore::overrides::OverrideBuilder::new(&workspace_root);
+    for pattern in &merged_config.ignore_patterns {
+        let clean = pattern.trim_start_matches("**/").trim_end_matches('/');
+        if !clean.is_empty() {
+            let _ = override_builder.add(&format!("!{}", clean));
+        }
+    }
+    if let Ok(overrides) = override_builder.build() {
+        builder.overrides(overrides);
+    }
+    
+    let walker = builder.build();
     
     for entry in walker {
         let entry = match entry {
@@ -1706,33 +1711,65 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
         };
         let path = entry.path();
         
-        // We only index directories
-        if !path.is_dir() {
+        // We only index files
+        if !path.is_file() {
             continue;
         }
         
-        // Skip the workspace root itself
-        if path == workspace_root {
+        // Skip common binary files
+        if let Some(ext) = path.extension() {
+            let ext_str = ext.to_string_lossy().to_lowercase();
+            let skip_exts = ["png", "jpg", "jpeg", "gif", "ico", "svg", "lock", "db", "bin", "exe", "wasm", "node_modules"];
+            if skip_exts.contains(&ext_str.as_str()) {
+                continue;
+            }
+        }
+        
+        let parent = match path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => continue,
+        };
+        
+        // Skip root directory files as the main entry note is index.md
+        if parent == workspace_root {
             continue;
         }
         
-        // Calculate relative path from workspace root
+        // Skip hidden paths
+        if parent.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')) {
+            continue;
+        }
+        
         let rel_path = match path.strip_prefix(&workspace_root) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => continue,
+        };
+        
+        let hash = match crate::hash::calculate_file_hash(path) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        
+        dir_files.entry(parent).or_default().push(crate::models::CodeReference {
+            path: rel_path,
+            hash,
+        });
+    }
+    
+    let mut scaffolded_count = 0;
+    
+    for (dir_path, references) in dir_files {
+        if references.is_empty() {
+            continue;
+        }
+        
+        let rel_path = match dir_path.strip_prefix(&workspace_root) {
             Ok(p) => p,
             Err(_) => continue,
         };
         
         let rel_path_str = rel_path.to_string_lossy().to_string();
         if rel_path_str.is_empty() {
-            continue;
-        }
-        
-        // Collect files directly inside this subdirectory (1 level deep)
-        let mut references = Vec::new();
-        collect_files_directly_in_dir(&path, &workspace_root, &merged_config, &mut references);
-        
-        // Skip directory notes that would be completely empty
-        if references.is_empty() {
             continue;
         }
         
@@ -1791,23 +1828,6 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn is_path_ignored(path: &Path, config: &crate::models::Config) -> bool {
-    let path_str = path.to_string_lossy().to_string();
-    for pattern in &config.ignore_patterns {
-        let pattern_clean = pattern.trim_start_matches("**/").trim_end_matches('/');
-        if pattern_clean.is_empty() {
-            continue;
-        }
-        if path.components().any(|c| c.as_os_str().to_string_lossy() == pattern_clean) {
-            return true;
-        }
-        if path_str.contains(pattern_clean) {
-            return true;
-        }
-    }
-    false
-}
-
 fn humanize_title(name: &str) -> String {
     name.split(&['_', '-', '/'])
         .map(|word| {
@@ -1819,57 +1839,6 @@ fn humanize_title(name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn collect_files_directly_in_dir(
-    dir_path: &Path,
-    workspace_root: &Path,
-    config: &crate::models::Config,
-    references: &mut Vec<crate::models::CodeReference>,
-) {
-    if let Ok(entries) = fs::read_dir(dir_path) {
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            
-            // Only direct files
-            if !path.is_file() {
-                continue;
-            }
-            
-            // Check ignores
-            if is_path_ignored(&path, config) {
-                continue;
-            }
-            
-            // Skip common binary files
-            if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                let skip_exts = ["png", "jpg", "jpeg", "gif", "ico", "svg", "lock", "db", "bin", "exe", "wasm", "node_modules"];
-                if skip_exts.contains(&ext_str.as_str()) {
-                    continue;
-                }
-            }
-            
-            let rel_path = match path.strip_prefix(workspace_root) {
-                Ok(p) => p.to_string_lossy().to_string(),
-                Err(_) => continue,
-            };
-            
-            let hash = match crate::hash::calculate_file_hash(&path) {
-                Ok(h) => h,
-                Err(_) => continue,
-            };
-            
-            references.push(crate::models::CodeReference {
-                path: rel_path,
-                hash,
-            });
-        }
-    }
 }
 
 

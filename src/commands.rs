@@ -642,16 +642,6 @@ Whenever a `.brainwares` vault directory is detected in the active workspace, th
             ("AGENTS.md", "OpenCode"),
         ];
 
-        let old_agent_rules_str = r#"# Brainwares Workspace Integration Rules
-
-This repository uses **Brainwares** (`bw`) for Obsidian-style markdown memory storage and code-reference hash tracking.
-
-You MUST follow these rules during your session:
-1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
-2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context about coding guidelines, system details, or database schemas.
-3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
-4. **Clean State**: Keep the vault clean and verified before completing your task."#;
-
         for (filename, agent_name) in files_to_create {
             let path = PathBuf::from(filename);
             let mut current = String::new();
@@ -661,7 +651,19 @@ You MUST follow these rules during your session:
                 }
             }
 
-            if !current.contains("Brainwares Workspace Integration Rules") {
+            if let Some(pos) = current.find("# Brainwares Workspace Integration Rules") {
+                if !current.contains("it does NOT do semantic search") {
+                    let prefix = &current[..pos];
+                    let new_content = format!("{}{}", prefix, AGENT_RULES_CONTENT);
+                    if fs::write(&path, new_content).is_ok() {
+                        println!("SUCCESS: Updated {} integration rules in {}", agent_name, filename);
+                    } else {
+                        println!("WARNING: Failed to write to {}", filename);
+                    }
+                } else {
+                    println!("INFO: {} rules already configured in {}.", agent_name, filename);
+                }
+            } else {
                 let separator = if current.is_empty() || current.ends_with('\n') { "" } else { "\n\n" };
                 let new_content = format!("{}{}{}", current, separator, AGENT_RULES_CONTENT);
                 if fs::write(&path, new_content).is_ok() {
@@ -669,28 +671,6 @@ You MUST follow these rules during your session:
                 } else {
                     println!("WARNING: Failed to write to {}", filename);
                 }
-            } else if current.contains(old_agent_rules_str) {
-                let updated = current.replace(old_agent_rules_str, AGENT_RULES_CONTENT);
-                if fs::write(&path, updated).is_ok() {
-                    println!("SUCCESS: Updated {} integration rules in {}", agent_name, filename);
-                } else {
-                    println!("WARNING: Failed to write to {}", filename);
-                }
-            } else if !current.contains("document them in a memory note") {
-                let old_short = "3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.";
-                let new_short = "3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to link and track them.";
-                if current.contains(old_short) {
-                    let updated = current.replace(old_short, new_short);
-                    if fs::write(&path, updated).is_ok() {
-                        println!("SUCCESS: Updated {} integration rules in {}", agent_name, filename);
-                    } else {
-                        println!("WARNING: Failed to write to {}", filename);
-                    }
-                } else {
-                    println!("INFO: {} rules already configured in {} (custom format).", agent_name, filename);
-                }
-            } else {
-                println!("INFO: {} rules already configured in {}.", agent_name, filename);
             }
         }
     } else {

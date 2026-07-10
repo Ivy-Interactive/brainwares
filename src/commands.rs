@@ -1031,6 +1031,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState(null);
   const [viewMode, setViewMode] = useState('doc');
+  const [graphMode, setGraphMode] = useState(data.memories && data.memories.length > 150 ? 'local' : 'global');
   const canvasRef = useRef(null);
 
   const preprocessMarkdown = (text) => {
@@ -1093,6 +1094,7 @@ export default function App() {
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
+    // 1. Calculate nodes
     const nodes = memories.map((m, index) => {
       const angle = (index / memories.length) * Math.PI * 2;
       const radius = Math.min(canvas.width, canvas.height) * 0.3;
@@ -1112,6 +1114,7 @@ export default function App() {
       };
     });
 
+    // 2. Calculate edges
     const edges = [];
     memories.forEach(m => {
       if (!m) return;
@@ -1132,19 +1135,74 @@ export default function App() {
       });
     });
 
+    // 3. Filter nodes and edges based on graphMode to keep performance high and prevent lag
+    let activeNodes = [];
+    let activeEdges = [];
+    
+    if (graphMode === 'local' && selectedNoteName) {
+      const selectedId = selectedNoteName.toLowerCase();
+      const connectedIds = new Set([selectedId]);
+      
+      edges.forEach(edge => {
+        if (edge.source.id === selectedId) {
+          connectedIds.add(edge.target.id);
+        }
+        if (edge.target.id === selectedId) {
+          connectedIds.add(edge.source.id);
+        }
+      });
+      
+      activeNodes = nodes.filter(n => connectedIds.has(n.id));
+      activeEdges = edges.filter(e => connectedIds.has(e.source.id) && connectedIds.has(e.target.id));
+      
+      // Pull local nodes slightly closer on initialization
+      activeNodes.forEach((node, index) => {
+        if (node.id !== selectedId) {
+          const angle = (index / activeNodes.length) * Math.PI * 2;
+          node.x = canvas.width / 2 + Math.cos(angle) * 120;
+          node.y = canvas.height / 2 + Math.sin(angle) * 120;
+        } else {
+          node.x = canvas.width / 2;
+          node.y = canvas.height / 2;
+        }
+      });
+    } else {
+      // Global graph: Cap to top 250 connected nodes to prevent quadratic lag and explosions on 1000+ notes
+      if (nodes.length > 250) {
+        const degree = {};
+        nodes.forEach(n => degree[n.id] = 0);
+        edges.forEach(e => {
+          if (degree[e.source.id] !== undefined) degree[e.source.id]++;
+          if (degree[e.target.id] !== undefined) degree[e.target.id]++;
+        });
+        
+        const sorted = [...nodes].sort((a, b) => (degree[b.id] || 0) - (degree[a.id] || 0));
+        const top = new Set(sorted.slice(0, 250).map(n => n.id));
+        
+        activeNodes = nodes.filter(n => top.has(n.id));
+        activeEdges = edges.filter(e => top.has(e.source.id) && top.has(e.target.id));
+      } else {
+        activeNodes = nodes;
+        activeEdges = edges;
+      }
+    }
+
     let animationId;
     let draggedNode = null;
 
     const step = () => {
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const n1 = nodes[i];
-          const n2 = nodes[j];
+      // Collision repulsion force
+      for (let i = 0; i < activeNodes.length; i++) {
+        for (let j = i + 1; j < activeNodes.length; j++) {
+          const n1 = activeNodes[i];
+          const n2 = activeNodes[j];
           const dx = n2.x - n1.x;
           const dy = n2.y - n1.y;
           const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (dist < 200) {
-            const force = (200 - dist) * 0.08;
+          const repulsionRadius = graphMode === 'local' ? 150 : 180;
+          if (dist < repulsionRadius) {
+            // Cap repulsion force to prevent node explosions
+            const force = Math.min(8, (repulsionRadius - dist) * 0.05);
             const fx = (dx / dist) * force;
             const fy = (dy / dist) * force;
             if (n1 !== draggedNode) { n1.vx -= fx; n1.vy -= fy; }
@@ -1153,35 +1211,38 @@ export default function App() {
         }
       }
 
-      edges.forEach(edge => {
+      // Link attraction force
+      activeEdges.forEach(edge => {
         const n1 = edge.source;
         const n2 = edge.target;
         const dx = n2.x - n1.x;
         const dy = n2.y - n1.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = dist * 0.02;
+        const force = dist * 0.015;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         if (n1 !== draggedNode) { n1.vx += fx; n1.vy += fy; }
         if (n2 !== draggedNode) { n2.vx -= fx; n2.vy -= fy; }
       });
 
+      // Gravity force to center
       const cx = canvas.width / 2;
       const cy = canvas.height / 2;
-      nodes.forEach(node => {
+      activeNodes.forEach(node => {
         if (node === draggedNode) return;
         const dx = cx - node.x;
         const dy = cy - node.y;
-        node.vx += dx * 0.005;
-        node.vy += dy * 0.005;
+        node.vx += dx * 0.003;
+        node.vy += dy * 0.003;
       });
 
-      nodes.forEach(node => {
+      // Apply velocities with damping to stabilize the graph quickly
+      activeNodes.forEach(node => {
         if (node === draggedNode) return;
         node.x += node.vx;
         node.y += node.vy;
-        node.vx *= 0.85;
-        node.vy *= 0.85;
+        node.vx *= 0.8;
+        node.vy *= 0.8;
         
         node.x = Math.max(20, Math.min(canvas.width - 20, node.x));
         node.y = Math.max(20, Math.min(canvas.height - 20, node.y));
@@ -1189,6 +1250,7 @@ export default function App() {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      // Grid background
       ctx.strokeStyle = '#18181b';
       ctx.lineWidth = 1;
       const gridSize = 40;
@@ -1205,16 +1267,18 @@ export default function App() {
         ctx.stroke();
       }
 
+      // Draw edges
       ctx.strokeStyle = '#3f3f46';
       ctx.lineWidth = 1.5;
-      edges.forEach(edge => {
+      activeEdges.forEach(edge => {
         ctx.beginPath();
         ctx.moveTo(edge.source.x, edge.source.y);
         ctx.lineTo(edge.target.x, edge.target.y);
         ctx.stroke();
       });
 
-      nodes.forEach(node => {
+      // Draw nodes
+      activeNodes.forEach(node => {
         const isCurrent = node.id === selectedNoteName.toLowerCase();
         
         ctx.beginPath();
@@ -1253,7 +1317,7 @@ export default function App() {
 
     const handleMouseDown = (e) => {
       const pos = getMousePos(e);
-      const clicked = nodes.find(node => {
+      const clicked = activeNodes.find(node => {
         const dx = node.x - pos.x;
         const dy = node.y - pos.y;
         return Math.sqrt(dx * dx + dy * dy) < node.radius + 10;
@@ -1289,7 +1353,7 @@ export default function App() {
       canvas.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [viewMode, memories, selectedNoteName]);
+  }, [viewMode, memories, selectedNoteName, graphMode]);
 
   const totalNotes = memories.length;
   const globalNotesCount = memories.filter(m => m && (m.file_path || '').includes('.config')).length;
@@ -1545,6 +1609,21 @@ export default function App() {
           ) : (
             <div className="w-full h-full relative overflow-hidden bg-zinc-950">
               <canvas ref={canvasRef} className="block w-full h-full cursor-grab active:cursor-grabbing" />
+              
+              <div className="absolute top-6 right-6 p-1 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl flex items-center space-x-1 select-none z-20">
+                <button
+                  onClick={() => setGraphMode('local')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${graphMode === 'local' ? 'bg-indigo-600 text-zinc-100 shadow-md shadow-indigo-500/10' : 'bg-transparent text-zinc-500 hover:text-zinc-300'}`}
+                >
+                  Local Graph
+                </button>
+                <button
+                  onClick={() => setGraphMode('global')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${graphMode === 'global' ? 'bg-indigo-600 text-zinc-100 shadow-md shadow-indigo-500/10' : 'bg-transparent text-zinc-500 hover:text-zinc-300'}`}
+                >
+                  Global Graph
+                </button>
+              </div>
               
               <div className="absolute bottom-6 left-6 p-4 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl text-xs space-y-2 select-none text-zinc-300">
                 <h4 className="font-bold text-zinc-200 mb-1">Legend</h4>

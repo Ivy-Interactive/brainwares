@@ -855,6 +855,11 @@ pub fn handle_ui(vault_path: &Path, port: u16) -> Result<(), String> {
     fs::write(ui_dir.join(".npmrc"), npmrc_content)
         .map_err(|e| format!("Failed to write .npmrc: {}", e))?;
 
+    // 1.6 Write pnpm-workspace.yaml to stop pnpm from scanning parent directories
+    let pnpm_workspace_content = "packages: []\n";
+    fs::write(ui_dir.join("pnpm-workspace.yaml"), pnpm_workspace_content)
+        .map_err(|e| format!("Failed to write pnpm-workspace.yaml: {}", e))?;
+
     // 2. Write vite.config.js
     let vite_config_content = r#"import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -1627,6 +1632,12 @@ export default function App() {
     // 8. Run Installation
     let node_modules_path = ui_dir.join("node_modules");
     if !node_modules_path.exists() {
+        // Remove any old/broken lockfile that might have been created under monorepo scope
+        let old_lockfile = ui_dir.join("pnpm-lock.yaml");
+        if old_lockfile.exists() {
+            let _ = fs::remove_file(old_lockfile);
+        }
+
         println!("Installing web interface dependencies (this may take a few seconds)...");
         let install_status = std::process::Command::new("vp")
             .arg("install")

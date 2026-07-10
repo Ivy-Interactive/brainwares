@@ -1037,6 +1037,10 @@ export default function App() {
   const zoomInButtonRef = useRef(null);
   const zoomOutButtonRef = useRef(null);
   const zoomResetButtonRef = useRef(null);
+  const selectedNoteNameRef = useRef(selectedNoteName);
+  useEffect(() => {
+    selectedNoteNameRef.current = selectedNoteName;
+  }, [selectedNoteName]);
 
   const preprocessMarkdown = (text) => {
     if (!text) return '';
@@ -1104,12 +1108,12 @@ export default function App() {
     let isPanning = false;
     let panStart = { x: 0, y: 0 };
     let draggedNode = null;
+    let hoveredNode = null;
 
     // 1. Calculate nodes
     const nodes = memories.map((m) => {
       const id = (m.name || '').toLowerCase();
       const name = m.frontmatter?.title || m.name || '';
-      const isCurrent = id === (selectedNoteName || '').toLowerCase();
       const isGlobal = (m.file_path || '').includes('.config');
       
       // Proximity to main node (depth) determines circle sizes
@@ -1121,9 +1125,6 @@ export default function App() {
         nodeRadius = 16;
       } else if (depth === 2) {
         nodeRadius = 12;
-      }
-      if (isCurrent) {
-        nodeRadius += 4;
       }
       
       return {
@@ -1164,7 +1165,7 @@ export default function App() {
     };
 
     const assignRadialLayout = (node, startAngle, endAngle, depth) => {
-      const radialStep = 220; // 220px separation per nesting folder depth
+      const radialStep = 280; // Expanded step (280px separation) to give outer circles breathing room
       const radius = depth * radialStep;
       const midAngle = (startAngle + endAngle) / 2;
       
@@ -1225,16 +1226,16 @@ export default function App() {
     // 4. Filter activeNodes and activeEdges based on graphMode
     let activeNodes = [];
     let activeEdges = [];
+    const activeNoteName = selectedNoteNameRef.current.toLowerCase();
     
-    if (graphMode === 'local' && selectedNoteName) {
-      const selectedId = selectedNoteName.toLowerCase();
-      const connectedIds = new Set([selectedId]);
+    if (graphMode === 'local' && activeNoteName) {
+      const connectedIds = new Set([activeNoteName]);
       
       edges.forEach(edge => {
-        if (edge.source.id === selectedId) {
+        if (edge.source.id === activeNoteName) {
           connectedIds.add(edge.target.id);
         }
-        if (edge.target.id === selectedId) {
+        if (edge.target.id === activeNoteName) {
           connectedIds.add(edge.source.id);
         }
       });
@@ -1243,12 +1244,12 @@ export default function App() {
       activeEdges = edges.filter(e => connectedIds.has(e.source.id) && connectedIds.has(e.target.id));
       
       // In local mode, override positions to layout neighbors in a simple circle around the selected node at (0,0)
-      const selectedNode = activeNodes.find(n => n.id === selectedId);
+      const selectedNode = activeNodes.find(n => n.id === activeNoteName);
       if (selectedNode) {
         selectedNode.x = 0;
         selectedNode.y = 0;
       }
-      const neighbors = activeNodes.filter(n => n.id !== selectedId);
+      const neighbors = activeNodes.filter(n => n.id !== activeNoteName);
       neighbors.forEach((node, index) => {
         const angle = (index / neighbors.length) * Math.PI * 2;
         node.x = Math.cos(angle) * 150;
@@ -1291,11 +1292,17 @@ export default function App() {
         ctx.stroke();
       }
 
+      const activeId = selectedNoteNameRef.current.toLowerCase();
+
       // Draw edges
       activeEdges.forEach(edge => {
-        const isConnectedToSelected = selectedNoteName && (
-          edge.source.id === selectedNoteName.toLowerCase() || 
-          edge.target.id === selectedNoteName.toLowerCase()
+        const isConnectedToSelected = activeId && (
+          edge.source.id === activeId || 
+          edge.target.id === activeId
+        );
+        const isConnectedToHovered = hoveredNode && (
+          edge.source.id === hoveredNode.id ||
+          edge.target.id === hoveredNode.id
         );
         
         ctx.beginPath();
@@ -1304,6 +1311,9 @@ export default function App() {
         
         if (isConnectedToSelected) {
           ctx.strokeStyle = '#818cf8'; // Glowing indigo edge for active connections
+          ctx.lineWidth = 2.5 / zoom;
+        } else if (isConnectedToHovered) {
+          ctx.strokeStyle = '#a5b4fc'; // Soft indigo edge for hovered connections
           ctx.lineWidth = 2 / zoom;
         } else {
           ctx.strokeStyle = '#27272a'; // Faint gray edge for other connections
@@ -1314,7 +1324,8 @@ export default function App() {
 
       // Draw nodes
       activeNodes.forEach(node => {
-        const isCurrent = node.id === selectedNoteName.toLowerCase();
+        const isCurrent = node.id === activeId;
+        const isHovered = hoveredNode && node.id === hoveredNode.id;
         
         // Find top-level segment for branch color-coding
         const firstSegment = node.id === 'index' ? 'index' : node.id.split('-')[0];
@@ -1348,9 +1359,11 @@ export default function App() {
           ? '#e2e8f0' 
           : (branchColors[firstSegment] || palette[segmentIndex % palette.length]);
 
+        // Draw hover glow ring
         ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius + (isCurrent ? 6 : 4), 0, Math.PI * 2);
-        ctx.fillStyle = isCurrent ? 'rgba(99, 102, 241, 0.25)' : 'rgba(39, 39, 42, 0.2)';
+        const displayRadius = node.radius + (isCurrent ? 6 : (isHovered ? 5 : 4));
+        ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
+        ctx.fillStyle = isCurrent ? 'rgba(99, 102, 241, 0.25)' : (isHovered ? 'rgba(165, 180, 252, 0.2)' : 'rgba(39, 39, 42, 0.2)');
         ctx.fill();
 
         ctx.beginPath();
@@ -1361,21 +1374,28 @@ export default function App() {
           ctx.strokeStyle = '#818cf8';
           ctx.lineWidth = 2.5 / zoom;
           ctx.stroke();
+        } else if (isHovered) {
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = nodeColor;
+          ctx.lineWidth = 2 / zoom;
+          ctx.stroke();
         } else {
           ctx.fillStyle = nodeColor;
         }
         ctx.fill();
 
+        // Show label if zoomed in, local mode, current node, index node, hovered node, or ancestor of selected
         const shouldShowLabel = 
           zoom > 0.8 ||
           graphMode === 'local' || 
           isCurrent || 
+          isHovered ||
           node.id === 'index' || 
-          (selectedNoteName && selectedNoteName.toLowerCase().startsWith(node.id + '-'));
+          (selectedNoteNameRef.current && selectedNoteNameRef.current.toLowerCase().startsWith(node.id + '-'));
 
         if (shouldShowLabel) {
-          ctx.font = `${isCurrent ? 'bold' : ''} ${12 / zoom}px sans-serif`;
-          ctx.fillStyle = isCurrent ? '#ffffff' : '#a1a1aa';
+          ctx.font = `${(isCurrent || isHovered) ? 'bold' : ''} ${12 / zoom}px sans-serif`;
+          ctx.fillStyle = (isCurrent || isHovered) ? '#ffffff' : '#a1a1aa';
           ctx.textAlign = 'center';
           ctx.fillText(node.name, node.x, node.y - node.radius - (8 / zoom));
         }
@@ -1425,8 +1445,16 @@ export default function App() {
 
     const handleMouseMove = (e) => {
       const mousePos = getMousePos(e);
+      const virtualPos = getVirtualMousePos(e);
+      
+      // Update hovered node tracking dynamically
+      hoveredNode = activeNodes.find(node => {
+        const dx = node.x - virtualPos.x;
+        const dy = node.y - virtualPos.y;
+        return Math.sqrt(dx * dx + dy * dy) < node.radius + 12;
+      }) || null;
+      
       if (draggedNode) {
-        const virtualPos = getVirtualMousePos(e);
         draggedNode.x = virtualPos.x;
         draggedNode.y = virtualPos.y;
       } else if (isPanning) {
@@ -1500,7 +1528,7 @@ export default function App() {
       if (zoomOutBtn) zoomOutBtn.removeEventListener('click', handleZoomOut);
       if (zoomResetBtn) zoomResetBtn.removeEventListener('click', handleZoomReset);
     };
-  }, [viewMode, memories, selectedNoteName, graphMode]);
+  }, [viewMode, memories, graphMode]);
 
   const totalNotes = memories.length;
   const globalNotesCount = memories.filter(m => m && (m.file_path || '').includes('.config')).length;

@@ -265,6 +265,8 @@ pub fn handle_update(
         None => return Err("Memory has no references to update.".to_string()),
     };
 
+    let mut modified = false;
+
     if let Some(target_file) = code_file {
         // Update specific reference
         let idx = refs.iter().position(|r| r.path == target_file)
@@ -272,37 +274,52 @@ pub fn handle_update(
 
         let code_path = workspace_root.join(&target_file);
         if !code_path.exists() {
-            return Err(format!("Code file not found in workspace: {}", target_file));
+            refs.remove(idx);
+            println!("Pruned reference to deleted file '{}'", target_file);
+            modified = true;
+        } else {
+            let new_hash = calculate_file_hash(&code_path)?;
+            if refs[idx].hash != new_hash {
+                refs[idx].hash = new_hash;
+                modified = true;
+            }
+            println!("Updated hash for '{}'", target_file);
         }
-
-        let new_hash = calculate_file_hash(&code_path)?;
-        refs[idx].hash = new_hash;
-        println!("Updated hash for '{}'", target_file);
     } else {
         // Update all references
-        for r in &mut refs {
+        let mut updated_refs = Vec::new();
+        for r in refs {
             let code_path = workspace_root.join(&r.path);
             if code_path.exists() {
+                let mut updated_r = r.clone();
                 if let Ok(new_hash) = calculate_file_hash(&code_path) {
-                    if r.hash != new_hash {
-                        println!("Updated hash for '{}' from '{}' to '{}'", r.path, r.hash, new_hash);
-                        r.hash = new_hash;
+                    if updated_r.hash != new_hash {
+                        println!("Updated hash for '{}' from '{}' to '{}'", updated_r.path, updated_r.hash, new_hash);
+                        updated_r.hash = new_hash;
+                        modified = true;
                     }
                 }
+                updated_refs.push(updated_r);
             } else {
-                println!("WARNING: Referenced file '{}' is missing. Skipping hash update.", r.path);
+                println!("Pruned reference to deleted file '{}'", r.path);
+                modified = true;
             }
         }
+        refs = updated_refs;
     }
 
-    page.frontmatter.references = Some(refs);
-    page.frontmatter.last_updated = Some(Utc::now().to_rfc3339());
+    if modified {
+        page.frontmatter.references = if refs.is_empty() { None } else { Some(refs) };
+        page.frontmatter.last_updated = Some(Utc::now().to_rfc3339());
 
-    let serialized = serialize_memory_file(&page)?;
-    fs::write(&memory_file, serialized)
-        .map_err(|e| format!("Failed to write updated memory file: {}", e))?;
+        let serialized = serialize_memory_file(&page)?;
+        fs::write(&memory_file, serialized)
+            .map_err(|e| format!("Failed to write updated memory file: {}", e))?;
 
-    println!("SUCCESS: Updated references for '{}'", page.name);
+        println!("SUCCESS: Updated references for '{}'", page.name);
+    } else {
+        println!("No changes detected for '{}'", page.name);
+    }
     Ok(())
 }
 
@@ -334,6 +351,41 @@ pub fn handle_shake(vault_path: &Path) -> Result<(), String> {
     }
     if !orphans_found {
         println!("No orphan memory notes found.");
+    }
+
+    // Prune references to deleted files across all memories
+    let workspace_root = get_workspace_root(vault_path);
+    let mut pruned_refs_count = 0;
+    for page in &memories {
+        if let Some(refs) = &page.frontmatter.references {
+            let mut updated_refs = Vec::new();
+            let mut modified = false;
+            for r in refs {
+                let code_path = workspace_root.join(&r.path);
+                if code_path.exists() {
+                    updated_refs.push(r.clone());
+                } else {
+                    println!("Memory '{}': Pruned reference to deleted file '{}'", page.name, r.path);
+                    pruned_refs_count += 1;
+                    modified = true;
+                }
+            }
+            if modified {
+                let mut updated_page = page.clone();
+                updated_page.frontmatter.references = if updated_refs.is_empty() { None } else { Some(updated_refs) };
+                updated_page.frontmatter.last_updated = Some(Utc::now().to_rfc3339());
+                
+                let serialized = serialize_memory_file(&updated_page)?;
+                fs::write(&page.file_path, serialized)
+                    .map_err(|e| format!("Failed to write updated memory file '{:?}': {}", page.file_path, e))?;
+            }
+        }
+    }
+
+    if pruned_refs_count > 0 {
+        println!("Pruned {} references to deleted files.", pruned_refs_count);
+    } else {
+        println!("No deleted file references found to prune.");
     }
 
     // Clean up empty logs
@@ -2317,6 +2369,98 @@ fn humanize_title(name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_memory_file;
+    use std::fs;
+
+    #[test]
+    fn test_handle_update_pruning() {
+        let temp_dir = std::env::temp_dir().join(format!("bw_test_update_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Initialize vault in temp_dir
+        let vault_path = temp_dir.join(".brainwares");
+        handle_init(&vault_path).unwrap();
+
+        // 2. Create a dummy code file and link it to a memory note
+        let code_file_name = "test_code.rs";
+        let code_file_path = temp_dir.join(code_file_name);
+        fs::write(&code_file_path, "fn main() {}").unwrap();
+
+        let memory_name = "my-test-memory";
+        handle_add(&vault_path, memory_name.to_string(), None, None, false).unwrap();
+        handle_link(&vault_path, memory_name.to_string(), code_file_name.to_string()).unwrap();
+
+        // Check reference exists
+        let memory_file = resolve_memory_path(&vault_path, memory_name).unwrap();
+        let content = fs::read_to_string(&memory_file).unwrap();
+        let page = parse_memory_file(&content, &memory_file).unwrap();
+        assert_eq!(page.frontmatter.references.as_ref().unwrap().len(), 1);
+        assert_eq!(page.frontmatter.references.as_ref().unwrap()[0].path, code_file_name);
+
+        // 3. Delete the code file
+        fs::remove_file(&code_file_path).unwrap();
+
+        // 4. Run update and check that reference is pruned
+        handle_update(&vault_path, memory_name.to_string(), None).unwrap();
+
+        let content2 = fs::read_to_string(&memory_file).unwrap();
+        let page2 = parse_memory_file(&content2, &memory_file).unwrap();
+        assert!(page2.frontmatter.references.is_none() || page2.frontmatter.references.as_ref().unwrap().is_empty());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_handle_shake_pruning() {
+        let temp_dir = std::env::temp_dir().join(format!("bw_test_shake_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Initialize vault in temp_dir
+        let vault_path = temp_dir.join(".brainwares");
+        handle_init(&vault_path).unwrap();
+
+        // 2. Create dummy code files
+        let code1 = "code1.rs";
+        let code2 = "code2.rs";
+        fs::write(temp_dir.join(code1), "const X: i32 = 1;").unwrap();
+        fs::write(temp_dir.join(code2), "const Y: i32 = 2;").unwrap();
+
+        // 3. Add memory notes and link
+        let mem1 = "mem-one";
+        let mem2 = "mem-two";
+        handle_add(&vault_path, mem1.to_string(), None, None, false).unwrap();
+        handle_add(&vault_path, mem2.to_string(), None, None, false).unwrap();
+
+        handle_link(&vault_path, mem1.to_string(), code1.to_string()).unwrap();
+        handle_link(&vault_path, mem2.to_string(), code2.to_string()).unwrap();
+
+        // Delete code1.rs, keep code2.rs
+        fs::remove_file(temp_dir.join(code1)).unwrap();
+
+        // Run shake
+        handle_shake(&vault_path).unwrap();
+
+        // Verify mem-one has code1 pruned, while mem-two still has code2
+        let file1 = resolve_memory_path(&vault_path, mem1).unwrap();
+        let content1 = fs::read_to_string(&file1).unwrap();
+        let page1 = parse_memory_file(&content1, &file1).unwrap();
+        assert!(page1.frontmatter.references.is_none() || page1.frontmatter.references.as_ref().unwrap().is_empty());
+
+        let file2 = resolve_memory_path(&vault_path, mem2).unwrap();
+        let content2 = fs::read_to_string(&file2).unwrap();
+        let page2 = parse_memory_file(&content2, &file2).unwrap();
+        assert_eq!(page2.frontmatter.references.as_ref().unwrap().len(), 1);
+        assert_eq!(page2.frontmatter.references.as_ref().unwrap()[0].path, code2);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }
 
 

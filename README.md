@@ -110,3 +110,9 @@ Step 4: Agent reads 'auth-flow.md', makes updates to match new src/main.rs code,
         then runs:   bw update auth-flow
                       (Memory hashes are now synchronized and status is clean again!)
 ```
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

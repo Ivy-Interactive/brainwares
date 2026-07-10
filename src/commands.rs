@@ -545,6 +545,7 @@ Whenever a `.brainwares` vault directory is detected in the active workspace, th
 2. **Reference Maintenance & Reflection**:
    - After completing edits on any codebase files, run `bw status` to see if your changes caused any memory notes to become outdated.
    - If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
+   - If you created any new source or configuration files, proactively document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to register their initial hashes.
    - Keep the vault clean and green before completing your turn.
 "#;
 
@@ -555,7 +556,7 @@ This repository uses **Brainwares** (`bw`) for Obsidian-style markdown memory st
 You MUST follow these rules during your session:
 1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
 2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context about coding guidelines, system details, or database schemas.
-3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
+3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to link and track them.
 4. **Clean State**: Keep the vault clean and verified before completing your task.
 "#;
 
@@ -572,6 +573,22 @@ pub fn handle_integrate() -> Result<(), String> {
         }
     }
 
+    let old_global_rules_str = r#"# Antigravity Global Rules
+
+## Brainwares Workspace Integration
+
+Whenever a `.brainwares` vault directory is detected in the active workspace, the agent MUST automatically hook up with it:
+
+1. **Context Discovery**:
+   - Before executing tasks, check for the presence of a `.brainwares/` folder.
+   - If present, run `bw status` to scan for any outdated references or broken wiki-links.
+   - Automatically load and read relevant memories using `bw read <note_name>` or `bw query <term>` to gain full context about coding guidelines, rules, or system details.
+
+2. **Reference Maintenance & Reflection**:
+   - After completing edits on any codebase files, run `bw status` to see if your changes caused any memory notes to become outdated.
+   - If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
+   - Keep the vault clean and green before completing your turn."#;
+
     if gemini_config_dir.exists() {
         let agents_md_path = gemini_config_dir.join("AGENTS.md");
         let mut current_content = String::new();
@@ -586,6 +603,22 @@ pub fn handle_integrate() -> Result<(), String> {
             let new_content = format!("{}{}{}", current_content, separator, GLOBAL_RULES_CONTENT);
             if fs::write(&agents_md_path, new_content).is_ok() {
                 println!("SUCCESS: Configured global Antigravity rules at {:?}", agents_md_path);
+            }
+        } else if current_content.contains(old_global_rules_str) {
+            let updated = current_content.replace(old_global_rules_str, GLOBAL_RULES_CONTENT);
+            if fs::write(&agents_md_path, updated).is_ok() {
+                println!("SUCCESS: Updated global Antigravity rules at {:?}", agents_md_path);
+            }
+        } else if !current_content.contains("proactively document them") {
+            let old_short = "If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.\n   - Keep the vault clean and green before completing your turn.";
+            let new_short = "If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.\n   - If you created any new source or configuration files, proactively document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to register their initial hashes.\n   - Keep the vault clean and green before completing your turn.";
+            if current_content.contains(old_short) {
+                let updated = current_content.replace(old_short, new_short);
+                if fs::write(&agents_md_path, updated).is_ok() {
+                    println!("SUCCESS: Updated global Antigravity rules at {:?}", agents_md_path);
+                }
+            } else {
+                println!("INFO: Global Antigravity rules already configured (custom format).");
             }
         } else {
             println!("INFO: Global Antigravity rules already configured.");
@@ -603,6 +636,16 @@ pub fn handle_integrate() -> Result<(), String> {
             (".windsurfrules", "Windsurf"),
         ];
 
+        let old_agent_rules_str = r#"# Brainwares Workspace Integration Rules
+
+This repository uses **Brainwares** (`bw`) for Obsidian-style markdown memory storage and code-reference hash tracking.
+
+You MUST follow these rules during your session:
+1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
+2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context about coding guidelines, system details, or database schemas.
+3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
+4. **Clean State**: Keep the vault clean and verified before completing your task."#;
+
         for (filename, agent_name) in files_to_create {
             let path = PathBuf::from(filename);
             let mut current = String::new();
@@ -619,6 +662,26 @@ pub fn handle_integrate() -> Result<(), String> {
                     println!("SUCCESS: Configured {} integration rules in {}", agent_name, filename);
                 } else {
                     println!("WARNING: Failed to write to {}", filename);
+                }
+            } else if current.contains(old_agent_rules_str) {
+                let updated = current.replace(old_agent_rules_str, AGENT_RULES_CONTENT);
+                if fs::write(&path, updated).is_ok() {
+                    println!("SUCCESS: Updated {} integration rules in {}", agent_name, filename);
+                } else {
+                    println!("WARNING: Failed to write to {}", filename);
+                }
+            } else if !current.contains("document them in a memory note") {
+                let old_short = "3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.";
+                let new_short = "3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to link and track them.";
+                if current.contains(old_short) {
+                    let updated = current.replace(old_short, new_short);
+                    if fs::write(&path, updated).is_ok() {
+                        println!("SUCCESS: Updated {} integration rules in {}", agent_name, filename);
+                    } else {
+                        println!("WARNING: Failed to write to {}", filename);
+                    }
+                } else {
+                    println!("INFO: {} rules already configured in {} (custom format).", agent_name, filename);
                 }
             } else {
                 println!("INFO: {} rules already configured in {}.", agent_name, filename);

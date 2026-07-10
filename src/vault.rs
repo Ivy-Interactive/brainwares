@@ -32,15 +32,18 @@ pub fn init_vault(vault_path: &Path) -> Result<Config, String> {
             .map_err(|e| format!("Failed to create vault directory: {}", e))?;
     }
 
+    let workspace_root = get_workspace_root(vault_path);
+
     let memories_dir = vault_path.join("memories");
     if !memories_dir.exists() {
         fs::create_dir_all(&memories_dir)
             .map_err(|e| format!("Failed to create memories directory: {}", e))?;
-        
-        // Let's create a default index.md
-        let index_path = memories_dir.join("index.md");
-        if !index_path.exists() {
-            let default_index = "\
+    }
+
+    // 1. Create memories/index.md
+    let index_path = memories_dir.join("index.md");
+    if !index_path.exists() {
+        let default_index = "\
 ---
 title: Welcome to Brainwares
 tags: [welcome, index]
@@ -48,18 +51,108 @@ tags: [welcome, index]
 
 # Welcome to Brainwares
 
-This is the entry point of your Obsidian-style memory vault for AI agents.
-Use wiki-links like [[Another Memory]] to link files.
+This is the main entry point of your brainwares memory vault.
+
+- Read the [[getting-started]] guide to learn how to use this tool.
+- Explore Promptware templates under `.brainwares/programs/`.
+- Use the CLI `bw status` to verify your workspace status!
 ";
-            fs::write(index_path, default_index)
-                .map_err(|e| format!("Failed to write default index.md: {}", e))?;
-        }
+        fs::write(index_path, default_index)
+            .map_err(|e| format!("Failed to write index.md: {}", e))?;
+    }
+
+    // 2. Create memories/getting-started.md
+    let getting_started_path = memories_dir.join("getting-started.md");
+    if !getting_started_path.exists() {
+        // Try to find a file to hash for the demo reference
+        let (ref_file, ref_hash) = if workspace_root.join("Cargo.toml").is_file() {
+            let hash = crate::hash::calculate_file_hash(workspace_root.join("Cargo.toml"))
+                .unwrap_or_else(|_| "d41d8cd98f00b204e9800998ecf8427e".to_string());
+            ("Cargo.toml", hash)
+        } else if workspace_root.join("README.md").is_file() {
+            let hash = crate::hash::calculate_file_hash(workspace_root.join("README.md"))
+                .unwrap_or_else(|_| "d41d8cd98f00b204e9800998ecf8427e".to_string());
+            ("README.md", hash)
+        } else {
+            ("Cargo.toml", "d41d8cd98f00b204e9800998ecf8427e".to_string())
+        };
+
+        let default_getting_started = format!("\
+---
+title: Getting Started with Brainwares
+references:
+  - path: \"{}\"
+    hash: \"{}\"
+tags: [tutorial, setup]
+---
+
+# Getting Started with Brainwares
+
+Brainwares merges the concepts of **Obsidian** (connected local Markdown notes) and **Promptware** (self-improving, context-aware prompt modules).
+
+## 1. Hashing Code References
+
+We have linked this note to your `{}` file! If you make any modifications to `{}`, your brainwares memory will detect that it is out-of-sync.
+
+Try this workflow:
+1. Run `bw status` (it should say `Outdated memories: 0`).
+2. Add a space or comment to `{}`.
+3. Run `bw status` again. It will flag this memory page as `[OUTDATED CODE]`.
+4. Run `bw update getting-started` to re-hash the file and mark it clean again!
+
+## 2. Linking Notes (Wiki-Links)
+
+You can link memory notes using Obsidian double-bracket syntax: [[index]].
+To check references and backlinks for this note:
+```bash
+bw read getting-started
+```
+", ref_file, ref_hash, ref_file, ref_file, ref_file);
+
+        fs::write(getting_started_path, default_getting_started)
+            .map_err(|e| format!("Failed to write getting-started.md: {}", e))?;
     }
 
     let programs_dir = vault_path.join("programs");
     if !programs_dir.exists() {
         fs::create_dir_all(&programs_dir)
             .map_err(|e| format!("Failed to create programs directory: {}", e))?;
+    }
+
+    // 3. Create programs/refactor.md
+    let refactor_program_path = programs_dir.join("refactor.md");
+    if !refactor_program_path.exists() {
+        let refactor_content = "\
+# Program: Code Refactoring
+
+You are an expert software engineer tasked with refactoring code files to follow clean coding standards, optimize performance, and improve maintainability.
+
+## Instructions
+1. Inspect the code files referenced in the compiled prompt.
+2. Review the context provided in the memories section.
+3. Perform the requested refactor on the code files.
+4. Reflect on the changes. If any code structure changed, write or update relevant memory pages using the `bw link` or `bw update` command.
+";
+        fs::write(refactor_program_path, refactor_content)
+            .map_err(|e| format!("Failed to write refactor.md program: {}", e))?;
+    }
+
+    // 4. Create programs/document.md
+    let document_program_path = programs_dir.join("document.md");
+    if !document_program_path.exists() {
+        let document_content = "\
+# Program: Codebase Documentation
+
+You are an automated documenter. Your task is to update or generate memory files documenting the files in this codebase.
+
+## Instructions
+1. Read the code files in the workspace.
+2. Draft a clear overview of the system architecture.
+3. Write or update memories explaining how key modules interact.
+4. Link the memory pages to their respective code files using `bw link <memory> <code_file>`.
+";
+        fs::write(document_program_path, document_content)
+            .map_err(|e| format!("Failed to write document.md program: {}", e))?;
     }
 
     let logs_dir = vault_path.join("logs");
@@ -85,6 +178,7 @@ Use wiki-links like [[Another Memory]] to link files.
 
     Ok(config)
 }
+
 
 pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
     let memories_dir = vault_path.join("memories");

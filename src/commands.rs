@@ -1103,23 +1103,19 @@ export default function App() {
     let isPanning = false;
     let panStart = { x: 0, y: 0 };
     let draggedNode = null;
-    let alpha = 1.0; // simulation cooling parameter
 
-    // 1. Calculate nodes (centered around virtual origin 0,0)
-    const nodes = memories.map((m, index) => {
-      const angle = (index / memories.length) * Math.PI * 2;
-      const spread = Math.sqrt(memories.length) * 18 + 100;
-      const radiusDist = spread + Math.random() * 80;
+    // 1. Calculate nodes
+    const nodes = memories.map((m) => {
       const id = (m.name || '').toLowerCase();
       const name = m.frontmatter?.title || m.name || '';
       const isCurrent = id === (selectedNoteName || '').toLowerCase();
       const isGlobal = (m.file_path || '').includes('.config');
       
-      // Proximity to main node (nesting depth)
+      // Proximity to main node (depth) determines circle sizes
       const depth = id === 'index' ? 0 : id.split('-').length;
       let nodeRadius = 8;
       if (depth === 0) {
-        nodeRadius = 24; // main node is largest
+        nodeRadius = 24;
       } else if (depth === 1) {
         nodeRadius = 16;
       } else if (depth === 2) {
@@ -1132,16 +1128,79 @@ export default function App() {
       return {
         id,
         name,
-        x: Math.cos(angle) * radiusDist,
-        y: Math.sin(angle) * radiusDist,
-        vx: 0,
-        vy: 0,
+        x: 0,
+        y: 0,
         radius: nodeRadius,
         isGlobal,
       };
     });
 
-    // 2. Calculate edges
+    // 2. Build Tree Structure from Node IDs and run Radial Dendrogram Algorithm
+    const root = { id: 'index', children: [], parent: null };
+    const nodeMap = { 'index': root };
+    
+    nodes.forEach(n => {
+      if (n.id !== 'index') {
+        nodeMap[n.id] = { id: n.id, children: [], parent: null, node: n };
+      }
+    });
+    
+    nodes.forEach(n => {
+      if (n.id === 'index') return;
+      const parts = n.id.split('-');
+      let parentId = 'index';
+      if (parts.length > 1) {
+        parentId = parts.slice(0, -1).join('-');
+      }
+      const parentNode = nodeMap[parentId] || root;
+      parentNode.children.push(nodeMap[n.id]);
+      nodeMap[n.id].parent = parentNode;
+    });
+
+    const countLeaves = (node) => {
+      if (node.children.length === 0) return 1;
+      return node.children.reduce((sum, child) => sum + countLeaves(child), 0);
+    };
+
+    const assignRadialLayout = (node, startAngle, endAngle, depth) => {
+      const radialStep = 220; // 220px separation per nesting folder depth
+      const radius = depth * radialStep;
+      const midAngle = (startAngle + endAngle) / 2;
+      
+      if (node.node) {
+        node.node.x = Math.cos(midAngle) * radius;
+        node.node.y = Math.sin(midAngle) * radius;
+      } else if (node.id === 'index') {
+        const idxNode = nodes.find(n => n.id === 'index');
+        if (idxNode) {
+          idxNode.x = 0;
+          idxNode.y = 0;
+        }
+      }
+      
+      if (node.children.length === 0) return;
+      
+      const angleRange = endAngle - startAngle;
+      const activeRange = angleRange * 0.95; // leave buffer to prevent sibling branch overlaps
+      const rangeStart = midAngle - activeRange / 2;
+      
+      node.children.sort((a, b) => a.id.localeCompare(b.id));
+      
+      const subtreeSizes = node.children.map(child => countLeaves(child));
+      const totalSubtree = subtreeSizes.reduce((sum, s) => sum + s, 0) || 1;
+      
+      let currentAngle = rangeStart;
+      node.children.forEach((child, idx) => {
+        const slice = (subtreeSizes[idx] / totalSubtree) * activeRange;
+        assignRadialLayout(child, currentAngle, currentAngle + slice, depth + 1);
+        currentAngle += slice;
+      });
+    };
+
+    // Initialize all static layouts centered on (0,0)
+    assignRadialLayout(root, 0, Math.PI * 2, 0);
+
+    // 3. Calculate edges
     const edges = [];
     memories.forEach(m => {
       if (!m) return;
@@ -1162,7 +1221,7 @@ export default function App() {
       });
     });
 
-    // 3. Filter nodes and edges based on graphMode to keep performance high and prevent lag
+    // 4. Filter activeNodes and activeEdges based on graphMode
     let activeNodes = [];
     let activeEdges = [];
     
@@ -1182,19 +1241,19 @@ export default function App() {
       activeNodes = nodes.filter(n => connectedIds.has(n.id));
       activeEdges = edges.filter(e => connectedIds.has(e.source.id) && connectedIds.has(e.target.id));
       
-      // Pull local nodes slightly closer on initialization
-      activeNodes.forEach((node, index) => {
-        if (node.id !== selectedId) {
-          const angle = (index / activeNodes.length) * Math.PI * 2;
-          node.x = Math.cos(angle) * 120;
-          node.y = Math.sin(angle) * 120;
-        } else {
-          node.x = 0;
-          node.y = 0;
-        }
+      // In local mode, override positions to layout neighbors in a simple circle around the selected node at (0,0)
+      const selectedNode = activeNodes.find(n => n.id === selectedId);
+      if (selectedNode) {
+        selectedNode.x = 0;
+        selectedNode.y = 0;
+      }
+      const neighbors = activeNodes.filter(n => n.id !== selectedId);
+      neighbors.forEach((node, index) => {
+        const angle = (index / neighbors.length) * Math.PI * 2;
+        node.x = Math.cos(angle) * 150;
+        node.y = Math.sin(angle) * 150;
       });
     } else {
-      // Global graph: Render all nodes completely to prevent disjointed subsets
       activeNodes = nodes;
       activeEdges = edges;
     }
@@ -1202,74 +1261,9 @@ export default function App() {
     let animationId;
 
     const step = () => {
-      if (alpha > 0.01) {
-        // Collision repulsion force (O(N^2) loop highly optimized with squared distance comparisons)
-        for (let i = 0; i < activeNodes.length; i++) {
-          const n1 = activeNodes[i];
-          for (let j = i + 1; j < activeNodes.length; j++) {
-            const n2 = activeNodes[j];
-            const dx = n2.x - n1.x;
-            const dy = n2.y - n1.y;
-            const distSq = dx * dx + dy * dy;
-            const repulsionRadius = n1.radius + n2.radius + (graphMode === 'local' ? 80 : 110);
-            const rSq = repulsionRadius * repulsionRadius;
-            
-            if (distSq < rSq) {
-              const dist = Math.sqrt(distSq) || 1;
-              const force = Math.min(8, (repulsionRadius - dist) * 0.05) * alpha;
-              const fx = (dx / dist) * force;
-              const fy = (dy / dist) * force;
-              if (n1 !== draggedNode) { n1.vx -= fx; n1.vy -= fy; }
-              if (n2 !== draggedNode) { n2.vx += fx; n2.vy += fy; }
-            }
-          }
-        }
-
-        // Link attraction force
-        activeEdges.forEach(edge => {
-          const n1 = edge.source;
-          const n2 = edge.target;
-          const dx = n2.x - n1.x;
-          const dy = n2.y - n1.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const force = dist * 0.015 * alpha;
-          const fx = (dx / dist) * force;
-          const fy = (dy / dist) * force;
-          if (n1 !== draggedNode) { n1.vx += fx; n1.vy += fy; }
-          if (n2 !== draggedNode) { n2.vx -= fx; n2.vy -= fy; }
-        });
-
-        // Gravity force to center origin (0,0)
-        const cx = 0;
-        const cy = 0;
-        activeNodes.forEach(node => {
-          if (node === draggedNode) return;
-          const dx = cx - node.x;
-          const dy = cy - node.y;
-          node.vx += dx * 0.003 * alpha;
-          node.vy += dy * 0.003 * alpha;
-        });
-
-        // Apply velocities with damping to stabilize the graph quickly
-        activeNodes.forEach(node => {
-          if (node === draggedNode) return;
-          node.x += node.vx;
-          node.y += node.vy;
-          node.vx *= 0.8;
-          node.vy *= 0.8;
-          
-          // Large virtual boundary to allow expansive layout
-          node.x = Math.max(-2000, Math.min(2000, node.x));
-          node.y = Math.max(-2000, Math.min(2000, node.y));
-        });
-
-        // Cooling decay rate
-        alpha *= 0.985;
-      }
-
+      // Just clear and render! No physics velocity math = 0% CPU overhead
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Render all elements inside the Pan & Zoom transform matrix space
       ctx.save();
       ctx.translate(pan.x, pan.y);
       ctx.scale(zoom, zoom);
@@ -1409,7 +1403,6 @@ export default function App() {
     };
 
     const handleMouseDown = (e) => {
-      alpha = 1.0; // wake up simulation
       const mousePos = getMousePos(e);
       const virtualPos = getVirtualMousePos(e);
       
@@ -1430,14 +1423,11 @@ export default function App() {
     };
 
     const handleMouseMove = (e) => {
-      alpha = 1.0; // wake up simulation
       const mousePos = getMousePos(e);
       if (draggedNode) {
         const virtualPos = getVirtualMousePos(e);
         draggedNode.x = virtualPos.x;
         draggedNode.y = virtualPos.y;
-        draggedNode.vx = 0;
-        draggedNode.vy = 0;
       } else if (isPanning) {
         pan.x = mousePos.x - panStart.x;
         pan.y = mousePos.y - panStart.y;
@@ -1452,7 +1442,6 @@ export default function App() {
     // Mouse scroll wheel / trackpad zoom-around-cursor
     const handleWheel = (e) => {
       e.preventDefault();
-      alpha = 1.0; // wake up simulation
       const zoomIntensity = 0.05;
       const mousePos = getMousePos(e);
       const zoomFactor = e.deltaY < 0 ? (1 + zoomIntensity) : (1 - zoomIntensity);
@@ -1465,7 +1454,6 @@ export default function App() {
 
     // Zoom Overlay Controls (Ref Bound Click Listeners)
     const handleZoomIn = () => {
-      alpha = 1.0; // wake up simulation
       const cx = canvas.width / 2;
       const cy = canvas.height / 2;
       const nextZoom = Math.min(8, zoom * 1.25);
@@ -1474,7 +1462,6 @@ export default function App() {
       zoom = nextZoom;
     };
     const handleZoomOut = () => {
-      alpha = 1.0; // wake up simulation
       const cx = canvas.width / 2;
       const cy = canvas.height / 2;
       const nextZoom = Math.max(0.1, zoom / 1.25);
@@ -1483,7 +1470,6 @@ export default function App() {
       zoom = nextZoom;
     };
     const handleZoomReset = () => {
-      alpha = 1.0; // wake up simulation
       zoom = graphMode === 'local' ? 1.0 : 0.6;
       pan = { x: canvas.width / 2, y: canvas.height / 2 };
     };

@@ -512,36 +512,87 @@ Whenever a `.brainwares` vault directory is detected in the active workspace, th
    - Keep the vault clean and green before completing your turn.
 "#;
 
+const AGENT_RULES_CONTENT: &str = r#"# Brainwares Workspace Integration Rules
+
+This repository uses **Brainwares** (`bw`) for Obsidian-style markdown memory storage and code-reference hash tracking.
+
+You MUST follow these rules during your session:
+1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
+2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context about coding guidelines, system details, or database schemas.
+3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
+4. **Clean State**: Keep the vault clean and verified before completing your task.
+"#;
+
 pub fn handle_integrate() -> Result<(), String> {
+    // 1. Configure Global Antigravity Integration
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "Could not find home directory environment variable (HOME or USERPROFILE)".to_string())?;
     
     let gemini_config_dir = PathBuf::from(home).join(".gemini").join("config");
     if !gemini_config_dir.exists() {
-        fs::create_dir_all(&gemini_config_dir)
-            .map_err(|e| format!("Failed to create Gemini config directory at {:?}: {}", gemini_config_dir, e))?;
+        if let Err(e) = fs::create_dir_all(&gemini_config_dir) {
+            println!("WARNING: Failed to create Gemini config directory: {}", e);
+        }
     }
 
-    let agents_md_path = gemini_config_dir.join("AGENTS.md");
-    let mut current_content = String::new();
-    if agents_md_path.is_file() {
-        current_content = fs::read_to_string(&agents_md_path)
-            .map_err(|e| format!("Failed to read existing AGENTS.md: {}", e))?;
+    if gemini_config_dir.exists() {
+        let agents_md_path = gemini_config_dir.join("AGENTS.md");
+        let mut current_content = String::new();
+        if agents_md_path.is_file() {
+            if let Ok(c) = fs::read_to_string(&agents_md_path) {
+                current_content = c;
+            }
+        }
+
+        if !current_content.contains("Brainwares Workspace Integration") {
+            let separator = if current_content.is_empty() || current_content.ends_with('\n') { "" } else { "\n\n" };
+            let new_content = format!("{}{}{}", current_content, separator, GLOBAL_RULES_CONTENT);
+            if fs::write(&agents_md_path, new_content).is_ok() {
+                println!("SUCCESS: Configured global Antigravity rules at {:?}", agents_md_path);
+            }
+        } else {
+            println!("INFO: Global Antigravity rules already configured.");
+        }
     }
 
-    if current_content.contains("Brainwares Workspace Integration") {
-        println!("INFO: Brainwares integration already configured in global AGENTS.md.");
-        return Ok(());
+    // 2. Configure Local Workspace Rules (CLAUDE.md, .cursorrules, .windsurfrules)
+    let local_vault = PathBuf::from(".brainwares");
+    if local_vault.is_dir() {
+        println!("Configuring agent integration rules for local workspace...");
+        
+        let files_to_create = vec![
+            ("CLAUDE.md", "Claude Code"),
+            (".cursorrules", "Cursor"),
+            (".windsurfrules", "Windsurf"),
+        ];
+
+        for (filename, agent_name) in files_to_create {
+            let path = PathBuf::from(filename);
+            let mut current = String::new();
+            if path.is_file() {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    current = content;
+                }
+            }
+
+            if !current.contains("Brainwares Workspace Integration Rules") {
+                let separator = if current.is_empty() || current.ends_with('\n') { "" } else { "\n\n" };
+                let new_content = format!("{}{}{}", current, separator, AGENT_RULES_CONTENT);
+                if fs::write(&path, new_content).is_ok() {
+                    println!("SUCCESS: Configured {} integration rules in {}", agent_name, filename);
+                } else {
+                    println!("WARNING: Failed to write to {}", filename);
+                }
+            } else {
+                println!("INFO: {} rules already configured in {}.", agent_name, filename);
+            }
+        }
+    } else {
+        println!("INFO: Local workspace .brainwares vault not found. Local rules integration skipped.");
+        println!("      -> Run 'bw init' first to set up a vault, then run 'bw integrate' in the project root.");
     }
 
-    let separator = if current_content.is_empty() || current_content.ends_with('\n') { "" } else { "\n\n" };
-    let new_content = format!("{}{}{}", current_content, separator, GLOBAL_RULES_CONTENT);
-    
-    fs::write(&agents_md_path, new_content)
-        .map_err(|e| format!("Failed to write global AGENTS.md file: {}", e))?;
-
-    println!("SUCCESS: Global Antigravity rules configured successfully at {:?}", agents_md_path);
     Ok(())
 }
 
@@ -558,7 +609,6 @@ pub fn handle_doctor() -> Result<(), String> {
         .is_ok();
 
     if !bw_ok {
-        // Try fallback to brainwares
         bw_ok = std::process::Command::new("brainwares")
             .arg("--help")
             .stdout(std::process::Stdio::null())
@@ -574,7 +624,7 @@ pub fn handle_doctor() -> Result<(), String> {
         println!("    -> To fix this, run: cargo install --path .");
     }
 
-    // 2. Check Agent Integration
+    // 2. Check Global Agent Integration
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
@@ -600,8 +650,34 @@ pub fn handle_doctor() -> Result<(), String> {
     let local_vault = PathBuf::from(".brainwares");
     if local_vault.is_dir() {
         println!("[✓] Local workspace has a .brainwares vault initialized.");
+        
+        // 4. Check Workspace Agent Rules Files
+        let workspace_rules = vec![
+            ("CLAUDE.md", "Claude Code"),
+            (".cursorrules", "Cursor"),
+            (".windsurfrules", "Windsurf"),
+        ];
+
+        for (filename, agent_name) in workspace_rules {
+            let path = PathBuf::from(filename);
+            let mut configured = false;
+            if path.is_file() {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if content.contains("Brainwares Workspace Integration Rules") {
+                        configured = true;
+                    }
+                }
+            }
+
+            if configured {
+                println!("[✓] {} integration rules are configured in local {}", agent_name, filename);
+            } else {
+                println!("[✗] {} integration rules are NOT configured in local {}", agent_name, filename);
+                println!("    -> To fix this, run: bw integrate");
+            }
+        }
     } else {
-        println!("[ ] Local workspace does not have a .brainwares vault initialized (optional).");
+        println!("[ ] Local workspace does not have a .brainwares vault initialized.");
         println!("    -> Run 'bw init' to bootstrap a vault in this project.");
     }
 

@@ -1683,6 +1683,7 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
     
     // Group files by parent directory path
     let mut dir_files: std::collections::HashMap<PathBuf, Vec<crate::models::CodeReference>> = std::collections::HashMap::new();
+    let mut dir_set: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     
     // Setup gitignore-aware WalkBuilder
     let mut builder = ignore::WalkBuilder::new(&workspace_root);
@@ -1750,17 +1751,41 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
             Err(_) => continue,
         };
         
-        dir_files.entry(parent).or_default().push(crate::models::CodeReference {
+        dir_files.entry(parent.clone()).or_default().push(crate::models::CodeReference {
             path: rel_path,
             hash,
         });
+        
+        // Walk up parent ancestors to build the directory tree hierarchy
+        let mut current = parent;
+        while current != workspace_root {
+            dir_set.insert(current.clone());
+            if let Some(p) = current.parent() {
+                current = p.to_path_buf();
+            } else {
+                break;
+            }
+        }
     }
     
     let mut scaffolded_count = 0;
+    let mut top_level_dirs = Vec::new();
     
-    for (dir_path, references) in dir_files {
-        if references.is_empty() {
-            continue;
+    for dir_path in &dir_set {
+        let references = dir_files.get(dir_path).cloned().unwrap_or_default();
+        
+        // Find direct child subdirectories in our indexed set
+        let mut subdirs = Vec::new();
+        for other_path in &dir_set {
+            if other_path.parent() == Some(dir_path) {
+                subdirs.push(other_path.clone());
+            }
+        }
+        subdirs.sort();
+        
+        // Keep track of top-level directories to link in index.md
+        if dir_path.parent() == Some(&workspace_root) {
+            top_level_dirs.push(dir_path.clone());
         }
         
         let rel_path = match dir_path.strip_prefix(&workspace_root) {
@@ -1792,19 +1817,36 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
         let frontmatter = crate::models::Frontmatter {
             title: Some(title.clone()),
             tags: Some(vec!["folder".to_string(), "index".to_string()]),
-            references: Some(references.clone()),
+            references: if references.is_empty() { None } else { Some(references.clone()) },
             last_updated: Some(chrono::Utc::now().to_rfc3339()),
         };
         
         // Build markdown body
         let mut body = format!("# {}\n\nScaffolded memory page for the `{}` directory.\n\n", title, rel_path_str);
-        body.push_str("## Core Files Reference Map\n\n");
-        for ref_item in &references {
-            let file_name = Path::new(&ref_item.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| ref_item.path.clone());
-            body.push_str(&format!("*   `{}`: [Enter description for file's role in this folder]\n", file_name));
+        
+        if !subdirs.is_empty() {
+            body.push_str("## Subdirectories\n\n");
+            for subdir in &subdirs {
+                if let Ok(sub_rel) = subdir.strip_prefix(&workspace_root) {
+                    let sub_rel_str = sub_rel.to_string_lossy().to_string();
+                    let normalized_sub = sub_rel_str.replace('\\', "-").replace('/', "-");
+                    let sub_memory_name = crate::vault::normalize_memory_name(&normalized_sub);
+                    let sub_title = humanize_title(&normalized_sub);
+                    body.push_str(&format!("- [[{}]] ({})\n", sub_memory_name, sub_title));
+                }
+            }
+            body.push_str("\n");
+        }
+        
+        if !references.is_empty() {
+            body.push_str("## Core Files Reference Map\n\n");
+            for ref_item in &references {
+                let file_name = Path::new(&ref_item.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ref_item.path.clone());
+                body.push_str(&format!("*   `{}`: [Enter description for file's role in this folder]\n", file_name));
+            }
         }
         
         let memory_page = crate::models::MemoryPage {
@@ -1821,6 +1863,29 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
             
         println!("SUCCESS: Created memory page [[{}]] referencing {} files.", memory_name, references.len());
         scaffolded_count += 1;
+    }
+    
+    // Sort top level dirs for deterministic indexing in index.md
+    top_level_dirs.sort();
+    
+    // Update index.md with Codebase Directories if they are not already listed
+    let index_path = memories_dir.join("index.md");
+    if index_path.exists() && !top_level_dirs.is_empty() {
+        if let Ok(mut content) = fs::read_to_string(&index_path) {
+            if !content.contains("## Codebase Directories") {
+                let mut dir_block = "\n\n## Codebase Directories\n\n".to_string();
+                for dir_path in &top_level_dirs {
+                    if let Ok(rel) = dir_path.strip_prefix(&workspace_root) {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        let normalized = rel_str.replace('\\', "-").replace('/', "-");
+                        let memory_name = crate::vault::normalize_memory_name(&normalized);
+                        dir_block.push_str(&format!("- [[{}]]\n", memory_name));
+                    }
+                }
+                content.push_str(&dir_block);
+                let _ = fs::write(&index_path, content);
+            }
+        }
     }
     
     println!("------------------------------------------------");

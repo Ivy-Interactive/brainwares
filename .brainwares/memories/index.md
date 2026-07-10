@@ -11,3 +11,8 @@ This is the main entry point of your brainwares memory vault.
 - Explore the core code architecture in [[src]].
 - Explore Promptware templates under `.brainwares/programs/`.
 - Use the CLI `bw status` to verify your workspace status!
+
+
+## Codebase Directories
+
+- [[src]]

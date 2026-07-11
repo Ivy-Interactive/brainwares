@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { marked } from 'marked';
 import { 
   BookOpen, Search, ShieldCheck, AlertCircle, RefreshCw, 
-  Tag, Link2, Share2, Compass, Network, FileCode, CheckCircle 
+  Tag, Link2, Share2, Compass, Network, FileCode, CheckCircle,
+  ChevronUp, Zap
 } from 'lucide-react';
 import data from './data.json';
 
@@ -27,7 +28,61 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState(null);
   const [viewMode, setViewMode] = useState('doc');
+  const [graphMode, setGraphMode] = useState(data.memories && data.memories.length > 150 ? 'local' : 'global');
+  const [maxDepth, setMaxDepth] = useState(3);
+  const [physicsEnabled, setPhysicsEnabled] = useState(false);
   const canvasRef = useRef(null);
+  const zoomInButtonRef = useRef(null);
+  const zoomOutButtonRef = useRef(null);
+  const zoomResetButtonRef = useRef(null);
+  const selectedNoteNameRef = useRef(selectedNoteName);
+  const prevSelectedNoteNameRef = useRef(selectedNoteName);
+  const prevGraphModeRef = useRef(graphMode);
+  const zoomRef = useRef(null);
+  const panRef = useRef(null);
+  const nodePositionsRef = useRef({});
+
+  useEffect(() => {
+    selectedNoteNameRef.current = selectedNoteName;
+  }, [selectedNoteName]);
+
+  const getParentNodeName = (name) => {
+    if (!name || name.toLowerCase() === 'index') return null;
+    const parts = name.split('-');
+    if (parts.length <= 1) {
+      return 'index';
+    }
+    const parentId = parts.slice(0, -1).join('-');
+    const parentMemory = memories.find(m => m && m.name && m.name.toLowerCase() === parentId);
+    if (parentMemory) {
+      return parentMemory.name;
+    }
+    for (let i = parts.length - 2; i >= 1; i--) {
+      const ancestorId = parts.slice(0, i).join('-');
+      const ancestorMemory = memories.find(m => m && m.name && m.name.toLowerCase() === ancestorId);
+      if (ancestorMemory) {
+        return ancestorMemory.name;
+      }
+    }
+    return 'index';
+  };
+
+  const workspaceRoot = data.vault_path ? data.vault_path.replace(/\/\.brainwares\/?$/, '') : '';
+
+  const openLocalFile = (filePath) => {
+    if (!filePath) return;
+    const fullPath = filePath.startsWith('/') ? filePath : `${workspaceRoot}/${filePath}`;
+    fetch(`/api/open-file?path=${encodeURIComponent(fullPath)}`)
+      .then(res => res.json())
+      .then(resData => {
+        if (!resData.success) {
+          console.error('Failed to open file:', resData.error);
+        }
+      })
+      .catch(err => {
+        console.error('Error calling open-file API:', err);
+      });
+  };
 
   const preprocessMarkdown = (text) => {
     if (!text) return '';
@@ -87,27 +142,192 @@ export default function App() {
       canvas.height = canvas.parentElement.clientHeight || 500;
     };
     resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      triggerRedraw();
+    });
 
-    const nodes = memories.map((m, index) => {
-      const angle = (index / memories.length) * Math.PI * 2;
-      const radius = Math.min(canvas.width, canvas.height) * 0.3;
+    // Restore or reset pan and zoom values
+    const prevSelectedNoteName = prevSelectedNoteNameRef.current;
+    prevSelectedNoteNameRef.current = selectedNoteName;
+
+    if (prevGraphModeRef.current !== graphMode) {
+      zoomRef.current = null;
+      panRef.current = null;
+      prevGraphModeRef.current = graphMode;
+    } else if (graphMode === 'local' && prevSelectedNoteName !== selectedNoteName) {
+      zoomRef.current = null;
+      panRef.current = null;
+    }
+
+    let zoom = zoomRef.current !== null ? zoomRef.current : (graphMode === 'local' ? 1.0 : 0.25);
+    let pan = panRef.current !== null ? panRef.current : { x: canvas.width / 2, y: canvas.height / 2 };
+    let isPanning = false;
+    let panStart = { x: 0, y: 0 };
+    let draggedNode = null;
+    let hoveredNode = null;
+
+    // Dominant workspace prefix and branch computation helper
+    const segmentCounts = {};
+    let nonIndexCount = 0;
+    memories.forEach(m => {
+      if (!m) return;
+      const id = (m.name || '').toLowerCase();
+      if (id !== 'index') {
+        const seg = id.split('-')[0];
+        segmentCounts[seg] = (segmentCounts[seg] || 0) + 1;
+        nonIndexCount++;
+      }
+    });
+    
+    let workspacePrefix = null;
+    if (nonIndexCount > 0) {
+      for (const [seg, count] of Object.entries(segmentCounts)) {
+        if (count / nonIndexCount > 0.5) {
+          workspacePrefix = seg;
+          break;
+        }
+      }
+    }
+
+    const getBranchOfId = (id) => {
+      if (id === 'index') return 'index';
+      const parts = id.split('-');
+      if (workspacePrefix && parts[0] === workspacePrefix && parts.length > 1) {
+        return parts[1];
+      }
+      return parts[0];
+    };
+
+    const activeNoteName = selectedNoteNameRef.current.toLowerCase();
+    const hasSavedPositions = Object.keys(nodePositionsRef.current).length > 0;
+
+    // 1. Calculate nodes
+    const nodes = memories.map((m) => {
       const id = (m.name || '').toLowerCase();
       const name = m.frontmatter?.title || m.name || '';
-      const isCurrent = id === (selectedNoteName || '').toLowerCase();
       const isGlobal = (m.file_path || '').includes('.config');
+      
+      let nodeRadius = 32;
+      if (graphMode === 'local') {
+        nodeRadius = id === activeNoteName ? 32 : 16;
+      } else {
+        const depth = id === 'index' ? 0 : id.split('-').length;
+        if (depth === 0) {
+          nodeRadius = 96;
+        } else if (depth === 1) {
+          nodeRadius = 64;
+        } else if (depth === 2) {
+          nodeRadius = 48;
+        }
+      }
+      
+      const saved = nodePositionsRef.current[id] || {};
+      
       return {
         id,
         name,
-        x: canvas.width / 2 + Math.cos(angle) * radius,
-        y: canvas.height / 2 + Math.sin(angle) * radius,
-        vx: 0,
-        vy: 0,
-        radius: isCurrent ? 12 : 8,
+        x: saved.x !== undefined ? saved.x : 0,
+        y: saved.y !== undefined ? saved.y : 0,
+        vx: saved.vx || 0,
+        vy: saved.vy || 0,
+        radius: nodeRadius,
         isGlobal,
       };
     });
 
+    // 2. Build Tree Structure from Node IDs and run Radial Dendrogram Algorithm
+    const root = { id: 'index', children: [], parent: null };
+    const nodeMap = { 'index': root };
+    
+    nodes.forEach(n => {
+      if (n.id !== 'index') {
+        nodeMap[n.id] = { id: n.id, children: [], parent: null, node: n };
+      }
+    });
+    
+    nodes.forEach(n => {
+      if (n.id === 'index') return;
+      const parts = n.id.split('-');
+      let parentId = 'index';
+      if (parts.length > 1) {
+        parentId = parts.slice(0, -1).join('-');
+      }
+      const parentNode = nodeMap[parentId] || root;
+      parentNode.children.push(nodeMap[n.id]);
+      nodeMap[n.id].parent = parentNode;
+    });
+
+    const countLeaves = (node) => {
+      if (node.children.length === 0) return 1;
+      return node.children.reduce((sum, child) => sum + countLeaves(child), 0);
+    };
+
+    const assignRadialLayout = (node, startAngle, endAngle, depth, siblingIndex = 0, siblingCount = 1, parentRadius = 0) => {
+      const baseRadialStep = 450; // Increased base step to accommodate 4x larger circles
+      
+      const angleRange = endAngle - startAngle;
+      const activeRange = angleRange * 0.95; // leave buffer to prevent sibling branch overlaps
+      const midAngle = (startAngle + endAngle) / 2;
+      
+      // Calculate how much space is needed to fit siblingCount nodes with zero overlap along the arc.
+      // Sibling nodes need to be spaced along the arc.
+      // We look up the node radius or fallback to 48px.
+      const nodeSize = node.node ? node.node.radius : 48;
+      const requiredSpacing = nodeSize * 2.5; // Circle diameter + spacing buffer
+      
+      // Arc length L = Radius * activeRange. We want L >= requiredSpacing * siblingCount.
+      // Therefore, the required radius R >= (requiredSpacing * siblingCount) / activeRange.
+      const requiredRadius = (requiredSpacing * siblingCount) / Math.max(activeRange, 0.12);
+      
+      // The separation step is the distance from parentRadius needed to achieve this requiredRadius.
+      const step = Math.max(baseRadialStep, requiredRadius - parentRadius);
+      const radius = depth === 0 ? 0 : parentRadius + step;
+      
+      // Stagger leaf nodes of large branches to prevent overlapping on dense concentric arcs.
+      // Leaf nodes (nodes with 0 children) will alternate depth slightly (+0px, +80px, +160px)
+      // to distribute physical presence in a clean spiral/starburst pattern.
+      let staggerOffset = 0;
+      if (siblingCount > 5 && node.children.length === 0) {
+        staggerOffset = (siblingIndex % 3) * 80;
+      }
+      
+      const finalRadius = radius + staggerOffset;
+      
+      if (node.node) {
+        node.node.x = Math.cos(midAngle) * finalRadius;
+        node.node.y = Math.sin(midAngle) * finalRadius;
+      } else if (node.id === 'index') {
+        const idxNode = nodes.find(n => n.id === 'index');
+        if (idxNode) {
+          idxNode.x = 0;
+          idxNode.y = 0;
+        }
+      }
+      
+      if (node.children.length === 0) return;
+      
+      const rangeStart = midAngle - activeRange / 2;
+      
+      node.children.sort((a, b) => a.id.localeCompare(b.id));
+      
+      const subtreeSizes = node.children.map(child => countLeaves(child));
+      const totalSubtree = subtreeSizes.reduce((sum, s) => sum + s, 0) || 1;
+      
+      let currentAngle = rangeStart;
+      node.children.forEach((child, idx) => {
+        const slice = (subtreeSizes[idx] / totalSubtree) * activeRange;
+        assignRadialLayout(child, currentAngle, currentAngle + slice, depth + 1, idx, node.children.length, radius);
+        currentAngle += slice;
+      });
+    };
+
+    // Only run layout if in global mode and positions haven't been saved yet
+    if (graphMode === 'global' && !hasSavedPositions) {
+      assignRadialLayout(root, 0, Math.PI * 2, 0, 0, 1, 0);
+    }
+
+    // 3. Calculate edges
     const edges = [];
     memories.forEach(m => {
       if (!m) return;
@@ -128,112 +348,428 @@ export default function App() {
       });
     });
 
+    // 4. Filter activeNodes and activeEdges based on graphMode
+    let activeNodes = [];
+    let activeEdges = [];
+    
+    if (graphMode === 'local' && activeNoteName) {
+      const connectedIds = new Set([activeNoteName]);
+      
+      edges.forEach(edge => {
+        if (edge.source.id === activeNoteName) {
+          connectedIds.add(edge.target.id);
+        }
+        if (edge.target.id === activeNoteName) {
+          connectedIds.add(edge.source.id);
+        }
+      });
+      
+      activeNodes = nodes.filter(n => connectedIds.has(n.id));
+      activeEdges = edges.filter(e => connectedIds.has(e.source.id) && connectedIds.has(e.target.id));
+      
+      // In local mode, override positions to layout neighbors in a simple circle around the selected node at (0,0)
+      const selectedNode = activeNodes.find(n => n.id === activeNoteName);
+      if (selectedNode) {
+        selectedNode.x = 0;
+        selectedNode.y = 0;
+      }
+      const neighbors = activeNodes.filter(n => n.id !== activeNoteName);
+      neighbors.forEach((node, index) => {
+        const angle = (index / neighbors.length) * Math.PI * 2;
+        node.x = Math.cos(angle) * 150;
+        node.y = Math.sin(angle) * 150;
+      });
+    } else {
+      activeNodes = nodes;
+      // In global graph view, filter out lines that cross different namespaces/branches
+      activeEdges = edges.filter(edge => {
+        const srcBranch = getBranchOfId(edge.source.id);
+        const tgtBranch = getBranchOfId(edge.target.id);
+        return srcBranch === tgtBranch || srcBranch === 'index' || tgtBranch === 'index';
+      });
+    }
+
     let animationId;
-    let draggedNode = null;
+    let needsRedraw = true; // State tracking for dirty render strategy
+
+    const triggerRedraw = () => {
+      needsRedraw = true;
+    };
 
     const step = () => {
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const n1 = nodes[i];
-          const n2 = nodes[j];
-          const dx = n2.x - n1.x;
-          const dy = n2.y - n1.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (dist < 200) {
-            const force = (200 - dist) * 0.08;
-            const fx = (dx / dist) * force;
-            const fy = (dy / dist) * force;
-            if (n1 !== draggedNode) { n1.vx -= fx; n1.vy -= fy; }
-            if (n2 !== draggedNode) { n2.vx += fx; n2.vy += fy; }
+      if (physicsEnabled) {
+        // 1. Reset forces
+        activeNodes.forEach(n => {
+          n.fx = 0;
+          n.fy = 0;
+        });
+
+        // 2. Repulsion (Coulomb's Law + overlapping spring)
+        const kRepulsion = 1500;
+        for (let i = 0; i < activeNodes.length; i++) {
+          const n1 = activeNodes[i];
+          for (let j = i + 1; j < activeNodes.length; j++) {
+            const n2 = activeNodes[j];
+            const dx = n1.x - n2.x;
+            const dy = n1.y - n2.y;
+            const distSq = dx * dx + dy * dy + 0.1;
+            const dist = Math.sqrt(distSq);
+            const minDist = n1.radius + n2.radius + 30;
+            
+            if (dist < minDist) {
+              const force = (minDist - dist) * 0.15;
+              const fx = (dx / dist) * force;
+              const fy = (dy / dist) * force;
+              n1.fx += fx;
+              n1.fy += fy;
+              n2.fx -= fx;
+              n2.fy -= fy;
+            } else {
+              const force = kRepulsion / distSq;
+              const fx = (dx / dist) * force;
+              const fy = (dy / dist) * force;
+              n1.fx += fx;
+              n1.fy += fy;
+              n2.fx -= fx;
+              n2.fy -= fy;
+            }
           }
         }
+
+        // 3. Attraction along active edges (Hooke's spring)
+        const kAttraction = 0.05;
+        const desiredLength = 120;
+        activeEdges.forEach(edge => {
+          const n1 = edge.source;
+          const n2 = edge.target;
+          const dx = n1.x - n2.x;
+          const dy = n1.y - n2.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
+          
+          const force = (dist - desiredLength) * kAttraction;
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+          n1.fx -= fx;
+          n1.fy -= fy;
+          n2.fx += fx;
+          n2.fy += fy;
+        });
+
+        // 4. Gravity pull to center (0,0)
+        const kGravity = 0.012;
+        activeNodes.forEach(n => {
+          if (n.id === 'index') return;
+          n.fx -= n.x * kGravity;
+          n.fy -= n.y * kGravity;
+        });
+
+        // 5. Update positions & velocities
+        activeNodes.forEach(n => {
+          if (n.id === 'index' && graphMode === 'global') {
+            n.x = 0;
+            n.y = 0;
+            return;
+          }
+          if (n === draggedNode) return;
+          
+          n.vx = (n.vx || 0) * 0.8 + n.fx;
+          n.vy = (n.vy || 0) * 0.8 + n.fy;
+          
+          const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+          const maxSpeed = 12;
+          if (speed > maxSpeed) {
+            n.vx = (n.vx / speed) * maxSpeed;
+            n.vy = (n.vy / speed) * maxSpeed;
+          }
+          
+          n.x += n.vx;
+          n.y += n.vy;
+        });
+
+        triggerRedraw();
       }
 
-      edges.forEach(edge => {
-        const n1 = edge.source;
-        const n2 = edge.target;
-        const dx = n2.x - n1.x;
-        const dy = n2.y - n1.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = dist * 0.02;
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        if (n1 !== draggedNode) { n1.vx += fx; n1.vy += fy; }
-        if (n2 !== draggedNode) { n2.vx -= fx; n2.vy -= fy; }
-      });
+      if (needsRedraw) {
+        needsRedraw = false;
 
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-      nodes.forEach(node => {
-        if (node === draggedNode) return;
-        const dx = cx - node.x;
-        const dy = cy - node.y;
-        node.vx += dx * 0.005;
-        node.vy += dy * 0.005;
-      });
+        // Clear canvas context
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      nodes.forEach(node => {
-        if (node === draggedNode) return;
-        node.x += node.vx;
-        node.y += node.vy;
-        node.vx *= 0.85;
-        node.vy *= 0.85;
-        
-        node.x = Math.max(20, Math.min(canvas.width - 20, node.x));
-        node.y = Math.max(20, Math.min(canvas.height - 20, node.y));
-      });
+        ctx.save();
+        ctx.translate(pan.x, pan.y);
+        ctx.scale(zoom, zoom);
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // 1. Frustum Bounding Box Calculation for dynamic screen space clipping (huge performance win)
+        const pad = 80;
+        const viewLeft = -pan.x / zoom - pad;
+        const viewRight = (canvas.width - pan.x) / zoom + pad;
+        const viewTop = -pan.y / zoom - pad;
+        const viewBottom = (canvas.height - pan.y) / zoom + pad;
 
-      ctx.strokeStyle = '#18181b';
-      ctx.lineWidth = 1;
-      const gridSize = 40;
-      for (let x = 0; x < canvas.width; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-      }
-      for (let y = 0; y < canvas.height; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = '#3f3f46';
-      ctx.lineWidth = 1.5;
-      edges.forEach(edge => {
-        ctx.beginPath();
-        ctx.moveTo(edge.source.x, edge.source.y);
-        ctx.lineTo(edge.target.x, edge.target.y);
-        ctx.stroke();
-      });
-
-      nodes.forEach(node => {
-        const isCurrent = node.id === selectedNoteName.toLowerCase();
-        
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius + (isCurrent ? 6 : 4), 0, Math.PI * 2);
-        ctx.fillStyle = isCurrent ? 'rgba(99, 102, 241, 0.15)' : 'rgba(39, 39, 42, 0.4)';
-        ctx.fill();
+        // 2. Grid background drawn dynamically in visible bounding box
+        ctx.strokeStyle = '#18181b';
+        ctx.lineWidth = 1 / zoom;
+        const gridSize = 40;
+        const startX = Math.floor(viewLeft / gridSize) * gridSize;
+        const endX = Math.ceil(viewRight / gridSize) * gridSize;
+        const startY = Math.floor(viewTop / gridSize) * gridSize;
+        const endY = Math.ceil(viewBottom / gridSize) * gridSize;
 
         ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-        
-        if (isCurrent) {
-          ctx.fillStyle = '#818cf8';
-        } else if (node.isGlobal) {
-          ctx.fillStyle = '#f97316';
-        } else {
-          ctx.fillStyle = '#6366f1';
+        for (let x = startX; x <= endX; x += gridSize) {
+          ctx.moveTo(x, startY);
+          ctx.lineTo(x, endY);
         }
+        for (let y = startY; y <= endY; y += gridSize) {
+          ctx.moveTo(startX, y);
+          ctx.lineTo(endX, y);
+        }
+        ctx.stroke();
+
+        const activeId = selectedNoteNameRef.current.toLowerCase();
+
+        // Filter and clip visible edges / nodes for viewport culling
+        const visibleNodes = activeNodes.filter(node => 
+          node.x >= viewLeft && node.x <= viewRight && 
+          node.y >= viewTop && node.y <= viewBottom
+        );
+
+        // 3. Batched Draw Calls for Edges (Reduces web draw calls from 3,000 to exactly 3!)
+        // Pass 1: Standard faint gray edges
+        ctx.beginPath();
+        ctx.strokeStyle = '#27272a';
+        ctx.lineWidth = 1 / zoom;
+        activeEdges.forEach(edge => {
+          // Viewport clipping: draw edge only if at least one node is visible
+          const isVisible = (edge.source.x >= viewLeft && edge.source.x <= viewRight && edge.source.y >= viewTop && edge.source.y <= viewBottom) ||
+                            (edge.target.x >= viewLeft && edge.target.x <= viewRight && edge.target.y >= viewTop && edge.target.y <= viewBottom);
+          if (!isVisible) return;
+
+          const isConnectedToSelected = activeId && (
+            edge.source.id === activeId || 
+            edge.target.id === activeId
+          );
+          const isConnectedToHovered = hoveredNode && (
+            edge.source.id === hoveredNode.id ||
+            edge.target.id === hoveredNode.id
+          );
+
+          if (!isConnectedToSelected && !isConnectedToHovered) {
+            ctx.moveTo(edge.source.x, edge.source.y);
+            ctx.lineTo(edge.target.x, edge.target.y);
+          }
+        });
+        ctx.stroke();
+
+        // Pass 2: Hovered edge connections
+        ctx.beginPath();
+        ctx.strokeStyle = '#a5b4fc';
+        ctx.lineWidth = 2 / zoom;
+        activeEdges.forEach(edge => {
+          const isConnectedToSelected = activeId && (
+            edge.source.id === activeId || 
+            edge.target.id === activeId
+          );
+          const isConnectedToHovered = hoveredNode && (
+            edge.source.id === hoveredNode.id ||
+            edge.target.id === hoveredNode.id
+          );
+
+          if (isConnectedToHovered && !isConnectedToSelected) {
+            ctx.moveTo(edge.source.x, edge.source.y);
+            ctx.lineTo(edge.target.x, edge.target.y);
+          }
+        });
+        ctx.stroke();
+
+        // Pass 3: Active selected edge connections
+        ctx.beginPath();
+        ctx.strokeStyle = '#818cf8';
+        ctx.lineWidth = 2.5 / zoom;
+        activeEdges.forEach(edge => {
+          const isConnectedToSelected = activeId && (
+            edge.source.id === activeId || 
+            edge.target.id === activeId
+          );
+
+          if (isConnectedToSelected) {
+            ctx.moveTo(edge.source.x, edge.source.y);
+            ctx.lineTo(edge.target.x, edge.target.y);
+          }
+        });
+        ctx.stroke();
+
+        // 4. Batch drawing nodes to prevent styling canvas context switches
+        // Determine if there is a dominant workspace prefix shared by most nodes
+        const segmentCounts = {};
+        let nonIndexCount = 0;
+        activeNodes.forEach(n => {
+          if (n.id !== 'index') {
+            const seg = n.id.split('-')[0];
+            segmentCounts[seg] = (segmentCounts[seg] || 0) + 1;
+            nonIndexCount++;
+          }
+        });
+        
+        let workspacePrefix = null;
+        if (nonIndexCount > 0) {
+          for (const [seg, count] of Object.entries(segmentCounts)) {
+            if (count / nonIndexCount > 0.5) {
+              workspacePrefix = seg;
+              break;
+            }
+          }
+        }
+
+        const getColorSegment = (id) => {
+          if (id === 'index') return 'index';
+          const parts = id.split('-');
+          if (workspacePrefix && parts[0] === workspacePrefix && parts.length > 1) {
+            return parts[1];
+          }
+          return parts[0];
+        };
+
+        const branchColors = {
+          'index': '#e2e8f0',       // Zinc White for central index
+          'framework': '#0ea5e9',   // Ocean Blue
+          'ivy.internals': '#ec4899', // Hot Pink
+          'internals': '#ec4899',   // Hot Pink
+          'web': '#10b981',         // Emerald Green
+          'tendril': '#f59e0b',     // Amber Gold
+          'agent': '#6366f1',       // Indigo Purple
+          'examples': '#8b5cf6',    // Deep Violet
+          'connections': '#14b8a6', // Teal
+          'src': '#a855f7',         // Purple
+          'docs': '#f43f5e',        // Rose
+        };
+        
+        const palette = [
+          '#10b981', // Emerald
+          '#f59e0b', // Amber
+          '#ec4899', // Pink
+          '#06b6d4', // Cyan
+          '#8b5cf6', // Violet
+          '#f43f5e', // Rose
+          '#3b82f6', // Blue
+          '#a855f7', // Purple
+          '#14b8a6', // Teal
+        ];
+        
+        const activeTopSegments = Array.from(new Set(
+          activeNodes
+            .map(n => getColorSegment(n.id))
+            .filter(s => s !== 'index')
+        ));
+
+        // Group nodes by colors for grouped batch fills
+        const nodesByColor = {};
+        visibleNodes.forEach(node => {
+          const isCurrent = node.id === activeId;
+          const isHovered = hoveredNode && node.id === hoveredNode.id;
+          if (isCurrent || isHovered) return; // Draw interacting nodes separately with stroke
+
+          const colorSegment = getColorSegment(node.id);
+          const segmentIndex = activeTopSegments.indexOf(colorSegment);
+          const nodeColor = colorSegment === 'index' 
+            ? '#e2e8f0' 
+            : (branchColors[colorSegment] || palette[segmentIndex % palette.length]);
+
+          if (!nodesByColor[nodeColor]) {
+            nodesByColor[nodeColor] = [];
+          }
+          nodesByColor[nodeColor].push(node);
+        });
+
+        // Group 1: Zinc background shadows for all visible nodes
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(39, 39, 42, 0.2)';
+        visibleNodes.forEach(node => {
+          const isCurrent = node.id === activeId;
+          const isHovered = hoveredNode && node.id === hoveredNode.id;
+          if (isCurrent || isHovered) return;
+          ctx.moveTo(node.x + node.radius + 4, node.y);
+          ctx.arc(node.x, node.y, node.radius + 4, 0, Math.PI * 2);
+        });
         ctx.fill();
 
-        ctx.font = isCurrent ? 'bold 12px sans-serif' : '11px sans-serif';
-        ctx.fillStyle = isCurrent ? '#f4f4f5' : '#a1a1aa';
-        ctx.textAlign = 'center';
-        ctx.fillText(node.name, node.x, node.y - node.radius - 8);
+        // Group 2: Draw the inner nodes in batch groups
+        Object.entries(nodesByColor).forEach(([color, nodeList]) => {
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          nodeList.forEach(node => {
+            ctx.moveTo(node.x + node.radius, node.y);
+            ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+          });
+          ctx.fill();
+        });
+
+        // Group 3: Interacting nodes (Selected, Hovered) drawn with individual strokes
+        visibleNodes.forEach(node => {
+          const isCurrent = node.id === activeId;
+          const isHovered = hoveredNode && node.id === hoveredNode.id;
+          if (!isCurrent && !isHovered) return;
+
+          const colorSegment = getColorSegment(node.id);
+          const segmentIndex = activeTopSegments.indexOf(colorSegment);
+          const nodeColor = colorSegment === 'index' 
+            ? '#e2e8f0' 
+            : (branchColors[colorSegment] || palette[segmentIndex % palette.length]);
+
+          // Glow shadow ring
+          ctx.beginPath();
+          const displayRadius = node.radius + (isCurrent ? 6 : 5);
+          ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
+          ctx.fillStyle = isCurrent ? 'rgba(99, 102, 241, 0.25)' : 'rgba(165, 180, 252, 0.2)';
+          ctx.fill();
+
+          // Circle fill & outline stroke
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+          
+          if (isCurrent) {
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#818cf8';
+            ctx.lineWidth = 2.5 / zoom;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = nodeColor;
+            ctx.lineWidth = 2 / zoom;
+            ctx.stroke();
+          }
+          ctx.fill();
+        });
+
+        // 5. Draw text labels
+        visibleNodes.forEach(node => {
+          const isCurrent = node.id === activeId;
+          const isHovered = hoveredNode && node.id === hoveredNode.id;
+
+          const shouldShowLabel = 
+            zoom > 0.8 ||
+            graphMode === 'local' || 
+            isCurrent || 
+            isHovered ||
+            node.id === 'index' || 
+            (selectedNoteNameRef.current && selectedNoteNameRef.current.toLowerCase().startsWith(node.id + '-'));
+
+          if (shouldShowLabel) {
+            ctx.font = `${(isCurrent || isHovered) ? 'bold' : ''} ${12 / zoom}px sans-serif`;
+            ctx.fillStyle = (isCurrent || isHovered) ? '#ffffff' : '#a1a1aa';
+            ctx.textAlign = 'center';
+            ctx.fillText(node.name, node.x, node.y - node.radius - (8 / zoom));
+          }
+        });
+
+        ctx.restore();
+      }
+
+      // Persist values to React refs so they survive useEffect teardowns on state changes
+      zoomRef.current = zoom;
+      panRef.current = pan;
+      nodes.forEach(n => {
+        nodePositionsRef.current[n.id] = { x: n.x, y: n.y, vx: n.vx, vy: n.vy };
       });
 
       animationId = requestAnimationFrame(step);
@@ -247,34 +783,137 @@ export default function App() {
       };
     };
 
+    // Calculate mouse position inside virtual coordinate space
+    const getVirtualMousePos = (e) => {
+      const mousePos = getMousePos(e);
+      return {
+        x: (mousePos.x - pan.x) / zoom,
+        y: (mousePos.y - pan.y) / zoom,
+      };
+    };
+
     const handleMouseDown = (e) => {
-      const pos = getMousePos(e);
-      const clicked = nodes.find(node => {
-        const dx = node.x - pos.x;
-        const dy = node.y - pos.y;
-        return Math.sqrt(dx * dx + dy * dy) < node.radius + 10;
+      const mousePos = getMousePos(e);
+      const virtualPos = getVirtualMousePos(e);
+      
+      const clicked = activeNodes.find(node => {
+        const dx = node.x - virtualPos.x;
+        const dy = node.y - virtualPos.y;
+        return Math.sqrt(dx * dx + dy * dy) < node.radius + 15;
       });
 
       if (clicked) {
         draggedNode = clicked;
         setSelectedNoteName(clicked.id);
+        triggerRedraw();
+      } else {
+        isPanning = true;
+        panStart.x = mousePos.x - pan.x;
+        panStart.y = mousePos.y - pan.y;
       }
     };
 
     const handleMouseMove = (e) => {
-      if (!draggedNode) return;
-      const pos = getMousePos(e);
-      draggedNode.x = pos.x;
-      draggedNode.y = pos.y;
+      const mousePos = getMousePos(e);
+      const virtualPos = getVirtualMousePos(e);
+      
+      // Update hovered node tracking dynamically
+      const oldHover = hoveredNode;
+      hoveredNode = activeNodes.find(node => {
+        const dx = node.x - virtualPos.x;
+        const dy = node.y - virtualPos.y;
+        return Math.sqrt(dx * dx + dy * dy) < node.radius + 12;
+      }) || null;
+      if (hoveredNode !== oldHover) {
+        triggerRedraw();
+      }
+      
+      if (draggedNode) {
+        draggedNode.x = virtualPos.x;
+        draggedNode.y = virtualPos.y;
+        triggerRedraw();
+      } else if (isPanning) {
+        pan.x = mousePos.x - panStart.x;
+        pan.y = mousePos.y - panStart.y;
+        triggerRedraw();
+      }
     };
 
     const handleMouseUp = () => {
       draggedNode = null;
+      isPanning = false;
+    };
+
+    // Mouse scroll wheel / trackpad zoom-around-cursor
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const zoomIntensity = 0.05;
+      const mousePos = getMousePos(e);
+      const zoomFactor = e.deltaY < 0 ? (1 + zoomIntensity) : (1 - zoomIntensity);
+      const nextZoom = Math.max(0.1, Math.min(8, zoom * zoomFactor));
+      
+      pan.x = mousePos.x - (mousePos.x - pan.x) * (nextZoom / zoom);
+      pan.y = mousePos.y - (mousePos.y - pan.y) * (nextZoom / zoom);
+      triggerRedraw();
+      zoom = nextZoom;
+      triggerRedraw();
+    };
+
+    const handleDblClick = (e) => {
+      const virtualPos = getVirtualMousePos(e);
+      const clicked = activeNodes.find(node => {
+        const dx = node.x - virtualPos.x;
+        const dy = node.y - virtualPos.y;
+        return Math.sqrt(dx * dx + dy * dy) < node.radius + 15;
+      });
+
+      if (clicked) {
+        setSelectedNoteName(clicked.id);
+        setViewMode('doc');
+      }
+    };
+
+    // Zoom Overlay Controls (Ref Bound Click Listeners)
+    const handleZoomIn = () => {
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const nextZoom = Math.min(8, zoom * 1.25);
+      pan.x = cx - (cx - pan.x) * (nextZoom / zoom);
+      pan.y = cy - (cy - pan.y) * (nextZoom / zoom);
+      zoom = nextZoom;
+      triggerRedraw();
+      triggerRedraw();
+      triggerRedraw();
+    };
+    const handleZoomOut = () => {
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const nextZoom = Math.max(0.1, zoom / 1.25);
+      pan.x = cx - (cx - pan.x) * (nextZoom / zoom);
+      pan.y = cy - (cy - pan.y) * (nextZoom / zoom);
+      zoom = nextZoom;
+      triggerRedraw();
+      triggerRedraw();
+      triggerRedraw();
+    };
+    const handleZoomReset = () => {
+      zoom = graphMode === 'local' ? 1.0 : 0.25;
+      pan = { x: canvas.width / 2, y: canvas.height / 2 };
+      triggerRedraw();
     };
 
     canvas.addEventListener('mousedown', handleMouseDown);
+    canvas.addEventListener('dblclick', handleDblClick);
     canvas.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+
+    const zoomInBtn = zoomInButtonRef.current;
+    const zoomOutBtn = zoomOutButtonRef.current;
+    const zoomResetBtn = zoomResetButtonRef.current;
+    if (zoomInBtn) zoomInBtn.addEventListener('click', handleZoomIn);
+    if (zoomOutBtn) zoomOutBtn.addEventListener('click', handleZoomOut);
+    if (zoomResetBtn) zoomResetBtn.addEventListener('click', handleZoomReset);
 
     animationId = requestAnimationFrame(step);
 
@@ -282,10 +921,15 @@ export default function App() {
       cancelAnimationFrame(animationId);
       window.removeEventListener('resize', resizeCanvas);
       canvas.removeEventListener('mousedown', handleMouseDown);
+      canvas.removeEventListener('dblclick', handleDblClick);
       canvas.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      canvas.removeEventListener('wheel', handleWheel);
+      if (zoomInBtn) zoomInBtn.removeEventListener('click', handleZoomIn);
+      if (zoomOutBtn) zoomOutBtn.removeEventListener('click', handleZoomOut);
+      if (zoomResetBtn) zoomResetBtn.removeEventListener('click', handleZoomReset);
     };
-  }, [viewMode, memories, selectedNoteName]);
+  }, [viewMode, memories, graphMode, maxDepth, selectedNoteName]);
 
   const totalNotes = memories.length;
   const globalNotesCount = memories.filter(m => m && (m.file_path || '').includes('.config')).length;
@@ -478,12 +1122,16 @@ export default function App() {
                           (selectedNote.frontmatter?.references || []).map(ref => {
                             const isOk = ref.status === 'OK';
                             return (
-                              <div key={ref.file_path} className="p-3 bg-zinc-900/40 border border-zinc-900 rounded-xl flex items-center justify-between">
+                              <button
+                                key={ref.file_path}
+                                onClick={() => openLocalFile(ref.file_path)}
+                                className="w-full text-left p-3 bg-zinc-900/40 hover:bg-zinc-900/70 border border-zinc-900 hover:border-zinc-800 rounded-xl transition-all duration-200 flex items-center justify-between group cursor-pointer text-left"
+                              >
                                 <div className="min-w-0 flex-1 pr-2">
-                                  <div className="text-xs font-mono truncate text-zinc-300" title={ref.file_path}>
+                                  <div className="text-xs font-mono truncate text-zinc-300 group-hover:text-indigo-400 transition-colors" title={ref.file_path}>
                                     {(ref.file_path || '').split('/').pop()}
                                   </div>
-                                  <div className="text-[10px] text-zinc-600 truncate">{ref.file_path}</div>
+                                  <div className="text-[10px] text-zinc-600 group-hover:text-zinc-500 transition-colors truncate">{ref.file_path}</div>
                                 </div>
                                 <div className="flex-shrink-0">
                                   {isOk ? (
@@ -498,7 +1146,7 @@ export default function App() {
                                     </span>
                                   )}
                                 </div>
-                              </div>
+                              </button>
                             );
                           })
                         ) : (
@@ -541,6 +1189,120 @@ export default function App() {
           ) : (
             <div className="w-full h-full relative overflow-hidden bg-zinc-950">
               <canvas ref={canvasRef} className="block w-full h-full cursor-grab active:cursor-grabbing" />
+              
+              {graphMode === 'global' && (
+                <div className="absolute top-6 left-6 p-1 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl flex items-center space-x-1 select-none z-20 text-xs text-zinc-400 px-3 py-1.5">
+                  <span className="font-semibold mr-2">Folder Depth:</span>
+                  {[1, 2, 3, 4].map(d => (
+                    <button
+                      key={d}
+                      onClick={() => setMaxDepth(d)}
+                      className={`w-6 h-6 rounded flex items-center justify-center font-bold font-mono transition-colors ${maxDepth === d ? 'bg-indigo-600 text-zinc-100 shadow' : 'bg-transparent hover:text-zinc-200'}`}
+                    >
+                      {d}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setMaxDepth(99)}
+                    className={`px-2 h-6 rounded flex items-center justify-center font-bold transition-colors ${maxDepth === 99 ? 'bg-indigo-600 text-zinc-100 shadow' : 'bg-transparent hover:text-zinc-200'}`}
+                  >
+                    All
+                  </button>
+                </div>
+              )}
+
+              {graphMode === 'local' && (
+                <div className="absolute top-6 left-6 p-1 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl flex items-center space-x-2 select-none z-20 text-xs text-zinc-400 px-3 py-1.5">
+                  <span className="font-semibold text-zinc-500">Parent:</span>
+                  {(() => {
+                    const parentName = getParentNodeName(selectedNoteName);
+                    if (parentName) {
+                      return (
+                        <button
+                          onClick={() => {
+                            setSelectedNoteName(parentName);
+                            const parentMemory = memories.find(m => m && m.name && m.name.toLowerCase() === parentName.toLowerCase());
+                            if (parentMemory) {
+                              openLocalFile(parentMemory.file_path);
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-600 hover:text-zinc-100 hover:border-indigo-500 transition-all duration-200 font-semibold flex items-center space-x-1.5 shadow-md shadow-indigo-500/5 cursor-pointer"
+                          title={`Navigate up to ${parentName}`}
+                        >
+                          <ChevronUp size={14} />
+                          <span className="truncate max-w-[150px]">{parentName}</span>
+                        </button>
+                      );
+                    } else {
+                      return <span className="text-zinc-600 italic">None (Root)</span>;
+                    }
+                  })()}
+                </div>
+              )}
+
+              <div className="absolute top-6 right-6 p-1 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl flex items-center space-x-1 select-none z-20">
+                {graphMode === 'global' && (
+                  <>
+                    <button
+                      onClick={() => setPhysicsEnabled(!physicsEnabled)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center space-x-1 cursor-pointer ${physicsEnabled ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-600/30' : 'bg-transparent text-zinc-500 hover:text-zinc-300'}`}
+                      title="Toggle Force-Directed Layout Physics"
+                    >
+                      <Zap size={12} className={physicsEnabled ? 'animate-bounce' : ''} />
+                      <span>{physicsEnabled ? 'Physics: ON' : 'Physics: OFF'}</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        nodePositionsRef.current = {};
+                        zoomRef.current = 0.25;
+                        panRef.current = { x: canvasRef.current ? canvasRef.current.width / 2 : 500, y: canvasRef.current ? canvasRef.current.height / 2 : 250 };
+                        setPhysicsEnabled(false);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-500 hover:text-zinc-300 bg-transparent transition-all duration-200 cursor-pointer flex items-center space-x-1"
+                      title="Reset nodes to default Radial Dendrogram positions"
+                    >
+                      <span>Reset Layout</span>
+                    </button>
+                    <div className="w-px h-4 bg-zinc-800 self-center mx-1" />
+                  </>
+                )}
+                <button
+                  onClick={() => setGraphMode('local')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${graphMode === 'local' ? 'bg-indigo-600 text-zinc-100 shadow-md shadow-indigo-500/10' : 'bg-transparent text-zinc-500 hover:text-zinc-300'}`}
+                >
+                  Local Graph
+                </button>
+                <button
+                  onClick={() => setGraphMode('global')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${graphMode === 'global' ? 'bg-indigo-600 text-zinc-100 shadow-md shadow-indigo-500/10' : 'bg-transparent text-zinc-500 hover:text-zinc-300'}`}
+                >
+                  Global Graph
+                </button>
+              </div>
+              
+              <div className="absolute bottom-6 right-6 p-1 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl flex items-center space-x-1 select-none z-20">
+                <button
+                  ref={zoomInButtonRef}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-sm font-bold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  title="Zoom In"
+                >
+                  ＋
+                </button>
+                <button
+                  ref={zoomOutButtonRef}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-sm font-bold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  title="Zoom Out"
+                >
+                  －
+                </button>
+                <button
+                  ref={zoomResetButtonRef}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-sm font-bold text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  title="Reset View"
+                >
+                  ⟲
+                </button>
+              </div>
               
               <div className="absolute bottom-6 left-6 p-4 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl text-xs space-y-2 select-none text-zinc-300">
                 <h4 className="font-bold text-zinc-200 mb-1">Legend</h4>

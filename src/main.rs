@@ -13,6 +13,12 @@ use std::path::PathBuf;
 fn main() {
     let cli = Cli::parse();
 
+    if let Some(project) = &cli.project {
+        unsafe {
+            std::env::set_var("BW_PROJECT", project);
+        }
+    }
+
     // Resolve vault path: either explicitly specified, or discovered
     let vault_path = match cli.vault {
         Some(v) => PathBuf::from(v),

@@ -101,6 +101,13 @@ pub fn find_vault_path() -> PathBuf {
 }
 
 pub fn get_project_name() -> Option<String> {
+    if let Ok(project) = std::env::var("BW_PROJECT") {
+        let trimmed = project.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
     let current_dir = std::env::current_dir().ok()?;
     
     // 1. Try to find name in config.yaml

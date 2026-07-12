@@ -7,6 +7,9 @@ pub struct Cli {
     #[arg(short, long, global = true, help = "Path to the vault directory (defaults to searching for .brainwares)")]
     pub vault: Option<String>,
 
+    #[arg(short, long, global = true, help = "Explicit project repository name to target (overrides current directory check)")]
+    pub project: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }

@@ -13,15 +13,7 @@ impl Default for Config {
             default_vault_dir: ".brainwares".to_string(),
             ignore_patterns: vec![
                 ".git".to_string(),
-                "target".to_string(),
                 ".brainwares".to_string(),
-                "node_modules".to_string(),
-                "bin".to_string(),
-                "obj".to_string(),
-                "dist".to_string(),
-                "build".to_string(),
-                "out".to_string(),
-                ".DS_Store".to_string(),
             ],
         }
     }

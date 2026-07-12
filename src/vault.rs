@@ -67,6 +67,16 @@ pub fn load_merged_config(vault_path: &Path) -> Config {
         }
         config.ignore_patterns = merged_ignores;
     }
+
+    // Dynamically load patterns from workspace's .gitignore file(s)
+    let workspace_root = get_workspace_root(vault_path);
+    let gitignore_patterns = load_gitignore_patterns(&workspace_root);
+    for pattern in gitignore_patterns {
+        if !config.ignore_patterns.contains(&pattern) {
+            config.ignore_patterns.push(pattern);
+        }
+    }
+
     config
 }
 
@@ -561,5 +571,22 @@ pub fn find_any_file_in_workspace(workspace_root: &Path) -> Option<String> {
         }
     }
     None
+}
+
+pub fn load_gitignore_patterns(workspace_root: &Path) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let gitignore_path = workspace_root.join(".gitignore");
+    if gitignore_path.is_file() {
+        if let Ok(content) = fs::read_to_string(&gitignore_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+                    continue;
+                }
+                patterns.push(trimmed.to_string());
+            }
+        }
+    }
+    patterns
 }
 

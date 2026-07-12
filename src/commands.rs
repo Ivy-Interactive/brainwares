@@ -1224,6 +1224,61 @@ mod tests {
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_handle_write() {
+        let temp_dir = std::env::temp_dir().join(format!("bw_test_write_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Initialize vault
+        let vault_path = temp_dir.join(".brainwares");
+        handle_init(&vault_path).unwrap();
+
+        // 2. Write to a new note
+        let note_name = "test-write-scenario";
+        let content_one = "Hello world, this is a test write.";
+        handle_write(&vault_path, note_name.to_string(), content_one.to_string()).unwrap();
+
+        // Verify file is created and contains correct content
+        let note_path = resolve_memory_path(&vault_path, note_name).unwrap();
+        assert!(note_path.exists());
+        let file_content = fs::read_to_string(&note_path).unwrap();
+        let parsed = parse_memory_file(&file_content, &note_path).unwrap();
+        assert_eq!(parsed.body.trim(), content_one);
+        assert_eq!(parsed.frontmatter.title.as_deref(), Some("test write scenario"));
+        assert!(parsed.frontmatter.last_updated.is_some());
+
+        // 3. Overwrite it with new content
+        let content_two = "Updated content here!";
+        handle_write(&vault_path, note_name.to_string(), content_two.to_string()).unwrap();
+
+        let file_content_updated = fs::read_to_string(&note_path).unwrap();
+        let parsed_updated = parse_memory_file(&file_content_updated, &note_path).unwrap();
+        assert_eq!(parsed_updated.body.trim(), content_two);
+        // Title should be preserved
+        assert_eq!(parsed_updated.frontmatter.title.as_deref(), Some("test write scenario"));
+
+        // 4. Overwrite preserving manual edits (e.g. tags)
+        // Let's manually edit tags in the page and serialize it
+        let mut edited_page = parsed_updated.clone();
+        edited_page.frontmatter.tags = Some(vec!["manual-tag".to_string()]);
+        let serialized_edited = serialize_memory_file(&edited_page).unwrap();
+        fs::write(&note_path, serialized_edited).unwrap();
+
+        // Call handle_write again
+        let content_three = "Yet another update!";
+        handle_write(&vault_path, note_name.to_string(), content_three.to_string()).unwrap();
+
+        let file_content_final = fs::read_to_string(&note_path).unwrap();
+        let parsed_final = parse_memory_file(&file_content_final, &note_path).unwrap();
+        assert_eq!(parsed_final.body.trim(), content_three);
+        // Manual tag must be preserved!
+        assert_eq!(parsed_final.frontmatter.tags.as_ref().unwrap().len(), 1);
+        assert_eq!(parsed_final.frontmatter.tags.as_ref().unwrap()[0], "manual-tag");
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }
 
 

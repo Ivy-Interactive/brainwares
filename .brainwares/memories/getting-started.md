@@ -2,11 +2,11 @@
 title: Getting Started with Brainwares
 references:
 - path: Cargo.toml
-  hash: 0d5ed705465ddab7521a010864d9e74077ad933c8d62afdae532264d7f5b9ea7
+  hash: e968bd12d6dedd40b7bf817f1afc3dc5093f646fdaa010ee3c49a5cb2d357113
 tags:
 - tutorial
 - setup
-last_updated: 2026-07-12T15:14:40.047515+00:00
+last_updated: 2026-07-12T15:31:21.438673+00:00
 ---
 
 # Getting Started with Brainwares

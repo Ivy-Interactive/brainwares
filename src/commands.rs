@@ -27,24 +27,11 @@ fn resolve_memory_path(vault_path: &Path, input: &str) -> Result<PathBuf, String
         return Ok(resolved);
     }
 
-    // Try auto-resolving under a subfolder matching the current Git repository directory name
-    if let Ok(current_dir) = std::env::current_dir() {
-        let mut dir = current_dir;
-        let mut git_project_name = None;
-        loop {
-            if dir.join(".git").exists() {
-                git_project_name = dir.file_name().map(|n| n.to_string_lossy().to_string());
-                break;
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-        if let Some(proj_name) = git_project_name {
-            let project_resolved = local_memories_dir.join(&proj_name).join(&file_name);
-            if project_resolved.is_file() {
-                return Ok(project_resolved);
-            }
+    // Try auto-resolving under a subfolder matching the resolved project name
+    if let Some(proj_name) = crate::vault::get_project_name() {
+        let project_resolved = local_memories_dir.join(&proj_name).join(&file_name);
+        if project_resolved.is_file() {
+            return Ok(project_resolved);
         }
     }
 
@@ -184,21 +171,8 @@ pub fn handle_add(
         }
 
         if !name.contains('/') && !name.contains('\\') {
-            if let Ok(current_dir) = std::env::current_dir() {
-                let mut check_dir = current_dir;
-                let mut git_project_name = None;
-                loop {
-                    if check_dir.join(".git").exists() {
-                        git_project_name = check_dir.file_name().map(|n| n.to_string_lossy().to_string());
-                        break;
-                    }
-                    if !check_dir.pop() {
-                        break;
-                    }
-                }
-                if let Some(proj_name) = git_project_name {
-                    dir = dir.join(proj_name);
-                }
+            if let Some(proj_name) = crate::vault::get_project_name() {
+                dir = dir.join(proj_name);
             }
         }
         dir

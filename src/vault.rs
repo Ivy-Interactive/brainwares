@@ -83,15 +83,70 @@ pub fn find_vault_path() -> PathBuf {
     PathBuf::from(vault_dir_name)
 }
 
+pub fn get_project_name() -> Option<String> {
+    let current_dir = std::env::current_dir().ok()?;
+    
+    // 1. Try to find name in config.yaml
+    let tendril_home = std::env::var("TENDRIL_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".tendril")
+        });
+    let config_path = tendril_home.join("config.yaml");
+    if config_path.exists() {
+        if let Ok(content) = fs::read_to_string(&config_path) {
+            let mut current_project_name = None;
+            let target_path = fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
+            
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("- name:") || trimmed.starts_with("name:") {
+                    if let Some(idx) = trimmed.find(':') {
+                        current_project_name = Some(trimmed[idx + 1..].trim().to_string());
+                    }
+                } else if trimmed.starts_with("path:") {
+                    if let Some(idx) = trimmed.find(':') {
+                        let repo_path_raw = trimmed[idx + 1..].trim();
+                        let repo_path = PathBuf::from(repo_path_raw);
+                        if let Ok(full_repo_path) = fs::canonicalize(&repo_path) {
+                            if target_path.starts_with(&full_repo_path) {
+                                if let Some(name) = current_project_name {
+                                    return Some(name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fall back to git repo directory name
+    let mut dir = current_dir;
+    loop {
+        if dir.join(".git").exists() {
+            return dir.file_name().map(|n| n.to_string_lossy().to_string());
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
 pub fn get_workspace_root(vault_path: &Path) -> PathBuf {
     if let Ok(current_dir) = std::env::current_dir() {
-        let mut dir = current_dir;
-        loop {
-            if dir.join(".git").exists() {
-                return dir;
-            }
-            if !dir.pop() {
-                break;
+        let vault_parent = vault_path.parent().unwrap_or(vault_path);
+        if current_dir.starts_with(vault_parent) {
+            let mut dir = current_dir;
+            loop {
+                if dir.join(".git").exists() {
+                    return dir;
+                }
+                if !dir.pop() {
+                    break;
+                }
             }
         }
     }
@@ -307,14 +362,39 @@ pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
     let local_memories_dir = vault_path.join("memories");
     if local_memories_dir.is_dir() {
         let mut files = Vec::new();
-        find_markdown_files(&local_memories_dir, &mut files)?;
+        if let Some(proj_name) = get_project_name() {
+            // Load common memories directly in memories/ (non-recursive)
+            if let Ok(entries) = fs::read_dir(&local_memories_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
+                        files.push(path);
+                    }
+                }
+            }
+            // Load project-specific memories in memories/<proj_name>/ (recursive)
+            let project_memories_dir = local_memories_dir.join(&proj_name);
+            if project_memories_dir.is_dir() {
+                find_markdown_files(&project_memories_dir, &mut files)?;
+            }
+        } else {
+            // Fallback: load all files recursively
+            find_markdown_files(&local_memories_dir, &mut files)?;
+        }
+
         for path in files {
             let content = fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read local memory file {:?}: {}", path, e))?;
             let mut page = parse_memory_file(&content, &path)?;
             
             if let Ok(rel_path) = path.strip_prefix(&local_memories_dir) {
-                let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                let mut final_rel = rel_path;
+                if let Some(proj_name) = get_project_name() {
+                    if let Ok(project_rel) = rel_path.strip_prefix(&proj_name) {
+                        final_rel = project_rel;
+                    }
+                }
+                let rel_str = final_rel.to_string_lossy().replace('\\', "/");
                 let name = if rel_str.ends_with(".md") {
                     &rel_str[..rel_str.len() - 3]
                 } else {

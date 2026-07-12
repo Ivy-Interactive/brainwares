@@ -1,0 +1,175 @@
+name: Release Brainwares
+
+permissions:
+  contents: write
+  id-token: write
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            suffix: .exe
+          - rid: win-arm64
+            target: aarch64-pc-windows-msvc
+            os: windows-latest
+            suffix: .exe
+          - rid: linux-x64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            suffix: ""
+          - rid: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            suffix: ""
+          - rid: osx-x64
+            target: x86_64-apple-darwin
+            os: macos-13
+            suffix: ""
+          - rid: osx-arm64
+            target: aarch64-apple-darwin
+            os: macos-latest
+            suffix: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build binaries
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Windows Codesigning
+      - name: Prepare Windows binaries for signing
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p unsigned_binaries
+          cp target/${{ matrix.target }}/release/bw.exe unsigned_binaries/
+          cp target/${{ matrix.target }}/release/brainwares.exe unsigned_binaries/
+
+      - name: Sign Windows binaries
+        if: matrix.os == 'windows-latest'
+        uses: sslcom/esigner-codesign@develop
+        with:
+          command: batch_sign
+          username: ${{ secrets.SSL_COM_USERNAME }}
+          password: ${{ secrets.SSL_COM_PASSWORD }}
+          credential_id: ${{ secrets.SSL_COM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSL_COM_TOTP_SECRET }}
+          malware_block: true
+          dir_path: unsigned_binaries
+          output_path: signed_binaries
+
+      - name: Replace with signed Windows binaries
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cp -f signed_binaries/*.exe target/${{ matrix.target }}/release/
+
+      # macOS Codesigning
+      - name: Import Apple Certificates (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: "temporary-keychain-pwd"
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # Decode the certificate p12
+          echo -n "$MACOS_CERTIFICATE" | base64 --decode --output $CERTIFICATE_PATH
+
+          # Create and configure temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security default-keychain -s $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -t 21600 -u $KEYCHAIN_PATH
+
+          # Import p12
+          security import $CERTIFICATE_PATH -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/productsign -T /usr/bin/productbuild
+        
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+      - name: Sign macOS binaries
+        if: runner.os == 'macOS'
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" --sign "${{ secrets.MACOS_SIGN_APP_IDENTITY }}" target/${{ matrix.target }}/release/bw
+          codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" --sign "${{ secrets.MACOS_SIGN_APP_IDENTITY }}" target/${{ matrix.target }}/release/brainwares
+
+      # Packaging
+      - name: Package Windows binaries
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p release_archive
+          cp target/${{ matrix.target }}/release/bw.exe release_archive/
+          cp target/${{ matrix.target }}/release/brainwares.exe release_archive/
+          cd release_archive && zip -r ../brainwares-${{ matrix.rid }}.zip .
+
+      - name: Package Unix binaries
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          tar -czf brainwares-${{ matrix.rid }}.tar.gz -C target/${{ matrix.target }}/release bw brainwares
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brainwares-binaries-${{ matrix.rid }}
+          path: |
+            brainwares-*.zip
+            brainwares-*.tar.gz
+
+  publish-release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: brainwares-binaries-*
+          merge-multiple: true
+
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          echo "Uploading assets to release $TAG..."
+          gh release upload "$TAG" ./* --repo "${{ github.repository }}" --clobber
+
+      - name: Create draft/dispatch release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get version from Cargo.toml
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
+          TAG="v$VERSION"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, uploading assets..."
+            gh release upload "$TAG" ./* --repo "${{ github.repository }}" --clobber
+          else
+            echo "Creating draft release $TAG..."
+            gh release create "$TAG" ./* --repo "${{ github.repository }}" --draft --generate-notes
+          fi

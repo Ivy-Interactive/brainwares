@@ -1,0 +1,73 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to tag and release (e.g. 0.1.1). Leave blank to auto-increment patch version.'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version and update Cargo.toml
+        id: versioning
+        shell: bash
+        run: |
+          # 1. Parse current version from Cargo.toml
+          CURRENT_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
+          echo "Current version in Cargo.toml: $CURRENT_VERSION"
+          
+          # 2. Determine new version
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            NEW_VERSION="$INPUT_VERSION"
+          else
+            # Split version into components
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            # Increment patch version
+            NEW_VERSION="$major.$minor.$((patch + 1))"
+          fi
+          echo "New version: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          
+          # Check if tag already exists locally or on remote
+          if git rev-parse "v$NEW_VERSION" >/dev/null 2>&1 || git ls-remote --tags origin "refs/tags/v$NEW_VERSION" | grep -q "refs/tags/v$NEW_VERSION"; then
+            echo "Error: Tag v$NEW_VERSION already exists"
+            exit 1
+          fi
+
+          # 3. Update Cargo.toml
+          sed -i 's/^version = ".*"/version = "'"$NEW_VERSION"'"/' Cargo.toml
+          
+          # 4. Commit and push version bump
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add Cargo.toml
+          git commit -m "chore: bump version to $NEW_VERSION"
+          git push origin main
+
+      - name: Create and push tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -a "v${{ steps.versioning.outputs.version }}" -m "Release v${{ steps.versioning.outputs.version }}"
+          git push origin "v${{ steps.versioning.outputs.version }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release v${{ steps.versioning.outputs.version }}
+          tag_name: v${{ steps.versioning.outputs.version }}
+          generate_release_notes: true
+          make_latest: true

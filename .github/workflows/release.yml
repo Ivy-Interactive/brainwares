@@ -1,16 +1,61 @@
-name: Release Brainwares
+name: Release
 
 permissions:
   contents: write
   id-token: write
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to tag and release (e.g. 0.1.1). Leave blank to auto-increment patch version.'
+        required: false
+        default: ''
 
 jobs:
+  versioning:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and bump version
+        id: resolve
+        run: |
+          CURRENT_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            NEW_VERSION="$INPUT_VERSION"
+          else
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            NEW_VERSION="$major.$minor.$((patch + 1))"
+          fi
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          
+          # Check if tag already exists locally or on remote
+          if git rev-parse "v$NEW_VERSION" >/dev/null 2>&1 || git ls-remote --tags origin "refs/tags/v$NEW_VERSION" | grep -q "refs/tags/v$NEW_VERSION"; then
+            echo "Error: Tag v$NEW_VERSION already exists"
+            exit 1
+          fi
+
+          # Update Cargo.toml
+          sed -i 's/^version = ".*"/version = "'"$NEW_VERSION"'"/' Cargo.toml
+          
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add Cargo.toml
+          git commit -m "chore: bump version to $NEW_VERSION"
+          git push origin main
+          
+          git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
+
   build-binaries:
+    needs: versioning
     strategy:
       fail-fast: false
       matrix:
@@ -41,8 +86,10 @@ jobs:
             suffix: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
+      - name: Checkout at Tag
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.versioning.outputs.version }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -136,8 +183,8 @@ jobs:
             brainwares-*.zip
             brainwares-*.tar.gz
 
-  publish-release:
-    needs: build-binaries
+  create-release:
+    needs: [versioning, build-binaries]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -149,27 +196,13 @@ jobs:
           pattern: brainwares-binaries-*
           merge-multiple: true
 
-      - name: Upload to Release
-        if: github.event_name == 'release'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          echo "Uploading assets to release $TAG..."
-          gh release upload "$TAG" ./* --repo "${{ github.repository }}" --clobber
-
-      - name: Create draft/dispatch release
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Get version from Cargo.toml
-          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
-          TAG="v$VERSION"
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, uploading assets..."
-            gh release upload "$TAG" ./* --repo "${{ github.repository }}" --clobber
-          else
-            echo "Creating draft release $TAG..."
-            gh release create "$TAG" ./* --repo "${{ github.repository }}" --draft --generate-notes
-          fi
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release v${{ needs.versioning.outputs.version }}
+          tag_name: v${{ needs.versioning.outputs.version }}
+          files: |
+            brainwares-*.zip
+            brainwares-*.tar.gz
+          generate_release_notes: true
+          make_latest: true

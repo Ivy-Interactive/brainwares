@@ -67,6 +67,18 @@ pub fn find_vault_path() -> PathBuf {
             break;
         }
     }
+
+    let tendril_home = std::env::var("TENDRIL_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".tendril")
+        });
+    let central_candidate = tendril_home.join(vault_dir_name);
+    if central_candidate.is_dir() {
+        return central_candidate;
+    }
+
     // Default to local directory
     PathBuf::from(vault_dir_name)
 }
@@ -272,6 +284,21 @@ ui/
 }
 
 
+fn find_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir).map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))? {
+            let entry = entry.map_err(|e| format!("Directory entry error: {}", e))?;
+            let path = entry.path();
+            if path.is_dir() {
+                find_markdown_files(&path, files)?;
+            } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
+                files.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
     let mut memories = Vec::new();
     let mut loaded_names = std::collections::HashSet::new();
@@ -279,16 +306,25 @@ pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
     // 1. Load Local Memories
     let local_memories_dir = vault_path.join("memories");
     if local_memories_dir.is_dir() {
-        for entry in fs::read_dir(local_memories_dir).map_err(|e| format!("Failed to read local memories dir: {}", e))? {
-            let entry = entry.map_err(|e| format!("Directory entry error: {}", e))?;
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
-                let content = fs::read_to_string(&path)
-                    .map_err(|e| format!("Failed to read local memory file {:?}: {}", path, e))?;
-                let page = parse_memory_file(&content, &path)?;
-                loaded_names.insert(page.name.to_lowercase());
-                memories.push(page);
+        let mut files = Vec::new();
+        find_markdown_files(&local_memories_dir, &mut files)?;
+        for path in files {
+            let content = fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read local memory file {:?}: {}", path, e))?;
+            let mut page = parse_memory_file(&content, &path)?;
+            
+            if let Ok(rel_path) = path.strip_prefix(&local_memories_dir) {
+                let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                let name = if rel_str.ends_with(".md") {
+                    &rel_str[..rel_str.len() - 3]
+                } else {
+                    &rel_str
+                };
+                page.name = name.to_string();
             }
+
+            loaded_names.insert(page.name.to_lowercase());
+            memories.push(page);
         }
     }
 
@@ -297,18 +333,27 @@ pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
         if let Some(global_parent) = global_config_path.parent() {
             let global_memories_dir = global_parent.join("memories");
             if global_memories_dir.is_dir() {
-                for entry in fs::read_dir(global_memories_dir).map_err(|e| format!("Failed to read global memories dir: {}", e))? {
-                    let entry = entry.map_err(|e| format!("Directory entry error: {}", e))?;
-                    let path = entry.path();
-                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
-                        let content = fs::read_to_string(&path)
-                            .map_err(|e| format!("Failed to read global memory file {:?}: {}", path, e))?;
-                        let page = parse_memory_file(&content, &path)?;
-                        let name_lower = page.name.to_lowercase();
-                        if !loaded_names.contains(&name_lower) {
-                            loaded_names.insert(name_lower);
-                            memories.push(page);
-                        }
+                let mut files = Vec::new();
+                find_markdown_files(&global_memories_dir, &mut files)?;
+                for path in files {
+                    let content = fs::read_to_string(&path)
+                        .map_err(|e| format!("Failed to read global memory file {:?}: {}", path, e))?;
+                    let mut page = parse_memory_file(&content, &path)?;
+                    
+                    if let Ok(rel_path) = path.strip_prefix(&global_memories_dir) {
+                        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                        let name = if rel_str.ends_with(".md") {
+                            &rel_str[..rel_str.len() - 3]
+                        } else {
+                            &rel_str
+                        };
+                        page.name = name.to_string();
+                    }
+
+                    let name_lower = page.name.to_lowercase();
+                    if !loaded_names.contains(&name_lower) {
+                        loaded_names.insert(name_lower);
+                        memories.push(page);
                     }
                 }
             }

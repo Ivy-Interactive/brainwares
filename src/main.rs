@@ -105,6 +105,29 @@ fn main() {
         }
         Commands::Integrate => commands::handle_integrate(),
         Commands::Doctor => commands::handle_doctor(),
+        Commands::Write { memory, content } => {
+            if !vault_path.is_dir() {
+                Err(format!(
+                    "Vault directory {:?} does not exist. Initialize it first using 'bw init'.",
+                    vault_path
+                ))
+            } else {
+                let final_content_res = match content {
+                    Some(c) => Ok(c),
+                    None => {
+                        use std::io::{self, Read};
+                        let mut buffer = String::new();
+                        io::stdin()
+                            .read_to_string(&mut buffer)
+                            .map(|_| buffer)
+                            .map_err(|e| format!("Failed to read from stdin: {}", e))
+                    }
+                };
+                final_content_res.and_then(|final_content| {
+                    commands::handle_write(&vault_path, memory, final_content)
+                })
+            }
+        }
         Commands::Index => {
             if !vault_path.is_dir() {
                 Err(format!(

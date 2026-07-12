@@ -82,6 +82,15 @@ pub enum Commands {
     #[command(about = "Verify that Brainwares CLI and agent integrations are set up correctly")]
     Doctor,
 
+    #[command(about = "Write content directly to a memory note")]
+    Write {
+        #[arg(help = "Name or file path of the memory note")]
+        memory: String,
+
+        #[arg(help = "The content to write. If omitted, reads from stdin.")]
+        content: Option<String>,
+    },
+
     #[command(about = "Scan top-level workspace directories and bootstrap a markdown note for each")]
     Index,
 }

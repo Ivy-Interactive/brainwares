@@ -1080,6 +1080,60 @@ fn humanize_title(name: &str) -> String {
         .join(" ")
 }
 
+pub fn handle_write(
+    vault_path: &Path,
+    memory: String,
+    content: String,
+) -> Result<(), String> {
+    let memory_file = match resolve_memory_path(vault_path, &memory) {
+        Ok(path) => path,
+        Err(_) => {
+            let memories_dir = vault_path.join("memories");
+            if !memories_dir.exists() {
+                return Err("Vault not initialized. Run 'bw init' first.".to_string());
+            }
+            let mut safe_name = memory.trim().replace(" ", "-");
+            if !safe_name.ends_with(".md") {
+                safe_name.push_str(".md");
+            }
+            memories_dir.join(&safe_name)
+        }
+    };
+
+    let mut page = if memory_file.exists() {
+        let file_content = fs::read_to_string(&memory_file)
+            .map_err(|e| format!("Failed to read memory file: {}", e))?;
+        parse_memory_file(&file_content, &memory_file)?
+    } else {
+        let display_title = memory.trim()
+            .replace("-", " ")
+            .replace("_", " ")
+            .to_string();
+        MemoryPage {
+            file_path: memory_file.clone(),
+            name: memory_file.file_stem().unwrap().to_string_lossy().to_string(),
+            frontmatter: Frontmatter {
+                title: Some(display_title),
+                references: Some(Vec::new()),
+                tags: Some(Vec::new()),
+                last_updated: None,
+            },
+            body: String::new(),
+        }
+    };
+
+    page.body = content;
+    page.frontmatter.last_updated = Some(Utc::now().to_rfc3339());
+    page.file_path = memory_file.clone();
+
+    let serialized = serialize_memory_file(&page)?;
+    fs::write(&memory_file, serialized)
+        .map_err(|e| format!("Failed to write memory file: {}", e))?;
+
+    println!("SUCCESS: Wrote content to memory page at {:?}", memory_file);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

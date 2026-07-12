@@ -82,12 +82,6 @@ pub enum Commands {
     #[command(about = "Verify that Brainwares CLI and agent integrations are set up correctly")]
     Doctor,
 
-    #[command(about = "Spin up a web UI to explore and visualize your memories")]
-    Ui {
-        #[arg(short, long, default_value_t = 5173, help = "Port to run the web interface on")]
-        port: u16,
-    },
-
     #[command(about = "Scan top-level workspace directories and bootstrap a markdown note for each")]
     Index,
 }

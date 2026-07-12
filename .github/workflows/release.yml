@@ -85,6 +85,9 @@ jobs:
             os: macos-latest
             suffix: ""
     runs-on: ${{ matrix.os }}
+    env:
+      SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
     steps:
       - name: Checkout at Tag
         uses: actions/checkout@v4
@@ -101,7 +104,7 @@ jobs:
 
       # Windows Codesigning
       - name: Prepare Windows binaries for signing
-        if: matrix.os == 'windows-latest' && secrets.SSL_COM_USERNAME != ''
+        if: matrix.os == 'windows-latest' && env.SSL_COM_USERNAME != ''
         shell: bash
         run: |
           mkdir -p unsigned_binaries
@@ -109,7 +112,7 @@ jobs:
           cp target/${{ matrix.target }}/release/brainwares.exe unsigned_binaries/
 
       - name: Sign Windows binaries
-        if: matrix.os == 'windows-latest' && secrets.SSL_COM_USERNAME != ''
+        if: matrix.os == 'windows-latest' && env.SSL_COM_USERNAME != ''
         uses: sslcom/esigner-codesign@develop
         with:
           command: batch_sign
@@ -122,14 +125,14 @@ jobs:
           output_path: signed_binaries
 
       - name: Replace with signed Windows binaries
-        if: matrix.os == 'windows-latest' && secrets.SSL_COM_USERNAME != ''
+        if: matrix.os == 'windows-latest' && env.SSL_COM_USERNAME != ''
         shell: bash
         run: |
           cp -f signed_binaries/*.exe target/${{ matrix.target }}/release/
 
       # macOS Codesigning
       - name: Import Apple Certificates (macOS)
-        if: runner.os == 'macOS' && secrets.MACOS_CERTIFICATE != ''
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -153,7 +156,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
       - name: Sign macOS binaries
-        if: runner.os == 'macOS' && secrets.MACOS_CERTIFICATE != ''
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           codesign --force --options runtime --timestamp --keychain "$KEYCHAIN_PATH" --sign "${{ secrets.MACOS_SIGN_APP_IDENTITY }}" target/${{ matrix.target }}/release/bw

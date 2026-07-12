@@ -71,6 +71,13 @@ pub fn load_merged_config(vault_path: &Path) -> Config {
 }
 
 pub fn find_vault_path() -> PathBuf {
+    if let Ok(vault) = std::env::var("BW_VAULT") {
+        let trimmed = vault.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
     let global_config = load_global_config();
     let vault_dir_name = &global_config.default_vault_dir;
 

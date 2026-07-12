@@ -47,22 +47,19 @@ fn resolve_memory_path(vault_path: &Path, input: &str) -> Result<PathBuf, String
     }
 
     // 3. Try global memories dir
-    if let Some(global_config_path) = crate::vault::get_global_config_path() {
-        if let Some(global_parent) = global_config_path.parent() {
-            let global_memories_dir = global_parent.join("memories");
-            let resolved_global = global_memories_dir.join(&file_name);
-            if resolved_global.is_file() {
-                return Ok(resolved_global);
-            }
+    if let Some(global_memories_dir) = crate::vault::get_global_memories_dir() {
+        let resolved_global = global_memories_dir.join(&file_name);
+        if resolved_global.is_file() {
+            return Ok(resolved_global);
+        }
 
-            // Lowercased lookup in global memories dir
-            if let Ok(entries) = fs::read_dir(&global_memories_dir) {
-                let input_lower = file_name.to_lowercase();
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_file() && p.file_name().and_then(|n| n.to_str()).map(|s| s.to_lowercase()) == Some(input_lower.clone()) {
-                        return Ok(p);
-                    }
+        // Lowercased lookup in global memories dir
+        if let Ok(entries) = fs::read_dir(&global_memories_dir) {
+            let input_lower = file_name.to_lowercase();
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() && p.file_name().and_then(|n| n.to_str()).map(|s| s.to_lowercase()) == Some(input_lower.clone()) {
+                    return Ok(p);
                 }
             }
         }
@@ -154,11 +151,8 @@ pub fn handle_add(
     global: bool,
 ) -> Result<(), String> {
     let memories_dir = if global {
-        let global_path = crate::vault::get_global_config_path()
-            .ok_or_else(|| "Could not locate global config path".to_string())?;
-        let parent = global_path.parent()
-            .ok_or_else(|| "Could not locate global config directory parent".to_string())?;
-        let dir = parent.join("memories");
+        let dir = crate::vault::get_global_memories_dir()
+            .ok_or_else(|| "Could not locate global memories directory".to_string())?;
         if !dir.exists() {
             fs::create_dir_all(&dir)
                 .map_err(|e| format!("Failed to create global memories directory: {}", e))?;

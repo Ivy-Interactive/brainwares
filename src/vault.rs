@@ -11,6 +11,23 @@ pub fn get_global_config_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".config").join("brainwares").join("config.json"))
 }
 
+pub fn get_global_memories_dir() -> Option<PathBuf> {
+    let tendril_home = std::env::var("TENDRIL_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".tendril")
+        });
+    let tendril_memories = tendril_home.join("Promptwares").join("memories");
+    if tendril_memories.is_dir() {
+        return Some(tendril_memories);
+    }
+    
+    let global_config = get_global_config_path()?;
+    let parent = global_config.parent()?;
+    Some(parent.join("memories"))
+}
+
 pub fn load_global_config() -> Config {
     if let Some(path) = get_global_config_path() {
         if path.is_file() {
@@ -409,32 +426,29 @@ pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
     }
 
     // 2. Load Global Memories
-    if let Some(global_config_path) = get_global_config_path() {
-        if let Some(global_parent) = global_config_path.parent() {
-            let global_memories_dir = global_parent.join("memories");
-            if global_memories_dir.is_dir() {
-                let mut files = Vec::new();
-                find_markdown_files(&global_memories_dir, &mut files)?;
-                for path in files {
-                    let content = fs::read_to_string(&path)
-                        .map_err(|e| format!("Failed to read global memory file {:?}: {}", path, e))?;
-                    let mut page = parse_memory_file(&content, &path)?;
-                    
-                    if let Ok(rel_path) = path.strip_prefix(&global_memories_dir) {
-                        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-                        let name = if rel_str.ends_with(".md") {
-                            &rel_str[..rel_str.len() - 3]
-                        } else {
-                            &rel_str
-                        };
-                        page.name = name.to_string();
-                    }
+    if let Some(global_memories_dir) = get_global_memories_dir() {
+        if global_memories_dir.is_dir() {
+            let mut files = Vec::new();
+            find_markdown_files(&global_memories_dir, &mut files)?;
+            for path in files {
+                let content = fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to read global memory file {:?}: {}", path, e))?;
+                let mut page = parse_memory_file(&content, &path)?;
+                
+                if let Ok(rel_path) = path.strip_prefix(&global_memories_dir) {
+                    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                    let name = if rel_str.ends_with(".md") {
+                        &rel_str[..rel_str.len() - 3]
+                    } else {
+                        &rel_str
+                    };
+                    page.name = name.to_string();
+                }
 
-                    let name_lower = page.name.to_lowercase();
-                    if !loaded_names.contains(&name_lower) {
-                        loaded_names.insert(name_lower);
-                        memories.push(page);
-                    }
+                let name_lower = page.name.to_lowercase();
+                if !loaded_names.contains(&name_lower) {
+                    loaded_names.insert(name_lower);
+                    memories.push(page);
                 }
             }
         }

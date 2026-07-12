@@ -72,6 +72,18 @@ pub fn find_vault_path() -> PathBuf {
 }
 
 pub fn get_workspace_root(vault_path: &Path) -> PathBuf {
+    if let Ok(current_dir) = std::env::current_dir() {
+        let mut dir = current_dir;
+        loop {
+            if dir.join(".git").exists() {
+                return dir;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+
     vault_path
         .parent()
         .map(|p| p.to_path_buf())

@@ -993,8 +993,8 @@ pub fn handle_integrate() -> Result<(), String> {
     }
 
     // 2. Configure Local Workspace Rules (CLAUDE.md, .cursorrules, .windsurfrules)
-    let local_vault = PathBuf::from(".brainwares");
-    if local_vault.is_dir() {
+    let vault_path = crate::vault::find_vault_path();
+    if vault_path.is_dir() {
         println!("Configuring agent integration rules for local workspace...");
         
         let files_to_create = vec![

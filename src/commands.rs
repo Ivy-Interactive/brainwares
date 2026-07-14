@@ -825,20 +825,20 @@ pub fn handle_compile(vault_path: &Path, program: String, args: Vec<String>) -> 
 }
 
 const GLOBAL_RULES_CONTENT: &str = r#"# Antigravity Global Rules
-
+ 
 ## Brainwares Workspace Integration
-
+ 
 Whenever a `.brainwares` vault directory is detected in the active workspace, the agent MUST automatically hook up with it:
-
+ 
 1. **Context Discovery**:
    - Before executing tasks, check for the presence of a `.brainwares/` folder.
    - If present, run `bw status` to scan for any outdated references or broken wiki-links.
    - Automatically load and read relevant memories using `bw read <note_name>` or `bw query <term>` to gain full context about coding guidelines, rules, or system details.
-
+ 
 2. **Reference Maintenance & Reflection**:
    - After completing edits on any codebase files, run `bw status` to see if your changes caused any memory notes to become outdated.
-   - If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
-   - If you created any new source or configuration files, proactively document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to register their initial hashes.
+   - If references are outdated, read the memory page with `bw read <note_name>`, update its content by running `bw write <note_name>` (e.g., using `echo "..." | bw write <note_name>`), and run `bw update <note_name>` to synchronize the hashes. Do NOT write or edit the memory markdown files directly on the filesystem.
+   - If you created any new source or configuration files, proactively document them in a memory note (creating a new one if necessary using `bw add <note_name>`) and run `bw link <note_name> <file_path>` to register their initial hashes.
    - Keep the vault clean and green before completing your turn.
 "#;
 
@@ -849,7 +849,7 @@ This repository uses **Brainwares** (`bw`) for Obsidian-style markdown memory st
 You MUST follow these rules during your session:
 1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
 2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context. Note that `bw query` supports tokenized multi-word search queries (words are matched across fields, and results are ranked by relevance).
-3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to link and track them.
+3. **Reference Maintenance & Edits**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, read the memory page using `bw read <note_name>` and update its contents by running `bw write <note_name>` (e.g. `echo "new content" | bw write <note_name>`), and run `bw update <note_name>` to synchronize the hashes. Do NOT write or edit memory markdown files directly on the filesystem. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary using `bw add <note_name>`) and run `bw link <note_name> <file_path>` to link and track them.
 4. **Dependency Mapping**: When adding or updating memory notes, you MUST scan the code file's imports and dependencies. Add double-bracket Obsidian-style wiki-links (e.g. `[[dependency-note-name]]`) in the memory page content to establish relationships between modules and tests. Do NOT assume dependencies follow the folder structure; map them based on code imports and usage to produce a complete dependency/brain map.
 5. **Clean State**: Keep the vault clean and verified before completing your task.
 "#;

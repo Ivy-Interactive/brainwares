@@ -37,16 +37,16 @@ fn main() {
                 commands::handle_status(&vault_path)
             }
         }
-        Commands::Add { name, tags, title, global } => {
+        Commands::Add { name, tags, title, global, memory_type } => {
             if global {
-                commands::handle_add(&vault_path, name, tags, title, true)
+                commands::handle_add(&vault_path, name, tags, title, true, memory_type)
             } else if !vault_path.is_dir() {
                 Err(format!(
                     "Vault directory {:?} does not exist. Initialize it first using 'bw init' or use --global to add a user-wide memory.",
                     vault_path
                 ))
             } else {
-                commands::handle_add(&vault_path, name, tags, title, false)
+                commands::handle_add(&vault_path, name, tags, title, false, memory_type)
             }
         }
         Commands::Link { memory, code_file } => {
@@ -143,6 +143,12 @@ fn main() {
             } else {
                 commands::handle_index(&vault_path)
             }
+        }
+        Commands::Remove { name, global } => {
+            commands::handle_remove(&vault_path, name, global)
+        }
+        Commands::Rules => {
+            commands::handle_rules()
         }
     };
 

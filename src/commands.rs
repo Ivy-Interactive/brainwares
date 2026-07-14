@@ -1,6 +1,6 @@
 use crate::engine::{check_vault_status, ReferenceStatus};
 use crate::hash::calculate_file_hash;
-use crate::models::{CodeReference, Frontmatter, MemoryPage};
+use crate::models::{CodeReference, Frontmatter, MemoryPage, MemoryType};
 use crate::parser::{parse_memory_file, serialize_memory_file};
 use crate::vault::{get_backlinks, get_workspace_root, init_vault, load_memories};
 use chrono::Utc;
@@ -89,7 +89,9 @@ pub fn handle_status(vault_path: &Path) -> Result<(), String> {
 
     println!("================= VAULT STATUS =================");
     println!("Vault path: {:?}", vault_path);
-    println!("Total memories: {}", status.total_memories);
+    let file_count = status.memories.iter().filter(|m| m.memory_type == MemoryType::File).count();
+    let user_count = status.memories.iter().filter(|m| m.memory_type == MemoryType::User).count();
+    println!("Total memories: {} (File-based: {}, User-based: {})", status.total_memories, file_count, user_count);
     println!("------------------------------------------------");
 
     for m in &status.memories {
@@ -149,6 +151,7 @@ pub fn handle_add(
     tags: Option<String>,
     title: Option<String>,
     global: bool,
+    memory_type: Option<String>,
 ) -> Result<(), String> {
     let memories_dir = if global {
         let dir = crate::vault::get_global_memories_dir()
@@ -193,11 +196,19 @@ pub fn handle_add(
             .to_string()
     });
 
+    let parsed_type = match memory_type.as_deref() {
+        Some("file") => Some(MemoryType::File),
+        Some("user") => Some(MemoryType::User),
+        Some(other) => return Err(format!("Invalid memory type '{}'. Must be 'file' or 'user'.", other)),
+        None => None,
+    };
+
     let fm = Frontmatter {
         title: Some(display_title.clone()),
         references: Some(Vec::new()),
         tags: Some(parsed_tags),
         last_updated: Some(Utc::now().to_rfc3339()),
+        memory_type: parsed_type,
     };
 
     let page = MemoryPage {
@@ -218,6 +229,63 @@ pub fn handle_add(
         .map_err(|e| format!("Failed to write memory note: {}", e))?;
 
     println!("SUCCESS: Created memory page at {:?}", file_path);
+    Ok(())
+}
+
+pub fn handle_remove(
+    vault_path: &Path,
+    name: String,
+    global: bool,
+) -> Result<(), String> {
+    let memories_dir = if global {
+        crate::vault::get_global_memories_dir()
+            .ok_or_else(|| "Could not locate global memories directory".to_string())?
+    } else {
+        let mut dir = vault_path.join("memories");
+        if !dir.exists() {
+            return Err("Vault not initialized. Run 'bw init' first.".to_string());
+        }
+
+        if !name.contains('/') && !name.contains('\\') {
+            if let Some(proj_name) = crate::vault::get_project_name() {
+                dir = dir.join(proj_name);
+            }
+        }
+        dir
+    };
+
+    let mut safe_name = name.trim().replace(" ", "-");
+    if !safe_name.ends_with(".md") {
+        safe_name.push_str(".md");
+    }
+
+    let file_path = memories_dir.join(&safe_name);
+    if !file_path.exists() {
+        // Try case-insensitive lookup
+        if let Ok(entries) = fs::read_dir(&memories_dir) {
+            let input_lower = safe_name.to_lowercase();
+            let mut found_path = None;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() && p.file_name().and_then(|n| n.to_str()).map(|s| s.to_lowercase()) == Some(input_lower.clone()) {
+                    found_path = Some(p);
+                    break;
+                }
+            }
+            if let Some(p) = found_path {
+                fs::remove_file(&p)
+                    .map_err(|e| format!("Failed to remove memory note: {}", e))?;
+                println!("SUCCESS: Removed memory page at {:?}", p);
+                return Ok(());
+            }
+        }
+        return Err(format!("Memory note '{}' not found in vault.", name));
+    }
+
+    fs::remove_file(&file_path)
+        .map_err(|e| format!("Failed to remove memory note: {}", e))?;
+
+    println!("SUCCESS: Removed memory page at {:?}", file_path);
     Ok(())
 }
 
@@ -435,49 +503,108 @@ pub fn handle_shake(vault_path: &Path) -> Result<(), String> {
 pub fn handle_query(vault_path: &Path, term: String) -> Result<(), String> {
     let memories = load_memories(vault_path)?;
     let backlinks = get_backlinks(&memories);
-    let term_lower = term.to_lowercase();
-
+    
+    // Split the query into lowercase tokens
+    let tokens: Vec<String> = term.split_whitespace().map(|s| s.to_lowercase()).collect();
+    
     println!("Query results for '{}':", term);
     println!("------------------------------------------------");
 
-    let mut match_count = 0;
+    if tokens.is_empty() {
+        println!("No query term provided.");
+        return Ok(());
+    }
+
+    let mut scored_results = Vec::new();
+
     for page in &memories {
-        let title_match = page.frontmatter.title.as_ref().map(|t| t.to_lowercase().contains(&term_lower)).unwrap_or(false);
-        let name_match = page.name.to_lowercase().contains(&term_lower);
-        let tags_match = page.frontmatter.tags.as_ref().map(|tags| tags.iter().any(|tag| tag.to_lowercase().contains(&term_lower))).unwrap_or(false);
-        let body_match = page.body.to_lowercase().contains(&term_lower);
+        let mut matches_all_tokens = true;
+        let mut score = 0;
 
-        if name_match || title_match || tags_match || body_match {
-            match_count += 1;
-            println!("Memory: {} ({:?})", page.name, page.file_path.file_name().unwrap());
-            if let Some(t) = &page.frontmatter.title {
-                println!("  Title: {}", t);
+        for token in &tokens {
+            let title_match = page.frontmatter.title.as_ref().map(|t| t.to_lowercase().contains(token)).unwrap_or(false);
+            let name_match = page.name.to_lowercase().contains(token);
+            let tags_match = page.frontmatter.tags.as_ref().map(|tags| tags.iter().any(|tag| tag.to_lowercase().contains(token))).unwrap_or(false);
+            let body_match = page.body.to_lowercase().contains(token);
+
+            if !(name_match || title_match || tags_match || body_match) {
+                matches_all_tokens = false;
+                break;
             }
-            if let Some(tags) = &page.frontmatter.tags {
-                println!("  Tags: {:?}", tags);
+
+            // Calculate relevance score
+            if name_match {
+                score += 20;
             }
-            
-            // Print brief content snippets
+            if title_match {
+                score += 15;
+            }
+            if tags_match {
+                score += 10;
+            }
             if body_match {
-                println!("  Matching snippet:");
-                for line in page.body.lines() {
-                    if line.to_lowercase().contains(&term_lower) {
-                        println!("    ... {} ...", line.trim());
-                    }
-                }
+                // Find count of occurrences in the body
+                let count = page.body.to_lowercase().matches(token).count();
+                score += std::cmp::min(10, count * 2);
             }
-
-            // Print backlinks
-            let page_backlinks = backlinks.get(&page.name.to_lowercase());
-            if let Some(bls) = page_backlinks {
-                println!("  Backlinks (linked from):");
-                for bl in bls {
-                    println!("    - [[{}]] in {}", bl.source_name, bl.context);
-                }
-            }
-
-            println!();
         }
+
+        if matches_all_tokens {
+            scored_results.push((page, score));
+        }
+    }
+
+    // Sort by score in descending order
+    scored_results.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let match_count = scored_results.len();
+
+    for (page, score) in &scored_results {
+        println!("Memory: {} ({:?}) [Score: {}]", page.name, page.file_path.file_name().unwrap(), score);
+        if let Some(t) = &page.frontmatter.title {
+            println!("  Title: {}", t);
+        }
+        if let Some(tags) = &page.frontmatter.tags {
+            println!("  Tags: {:?}", tags);
+        }
+        
+        // Print brief content snippets containing at least one query token
+        let mut printed_snippets = 0;
+        let mut snippet_lines = Vec::new();
+        for line in page.body.lines() {
+            let line_lower = line.to_lowercase();
+            let mut line_matched = false;
+            for token in &tokens {
+                if line_lower.contains(token) {
+                    line_matched = true;
+                    break;
+                }
+            }
+            if line_matched {
+                snippet_lines.push(line.trim());
+                printed_snippets += 1;
+                if printed_snippets >= 5 { // Limit snippets per page
+                    break;
+                }
+            }
+        }
+        if !snippet_lines.is_empty() {
+            println!("  Matching snippets:");
+            for line in snippet_lines {
+                println!("    ... {} ...", line);
+            }
+        }
+
+        // Print backlinks
+        let page_backlinks = backlinks.get(&page.name.to_lowercase());
+        if let Some(bls) = page_backlinks {
+            println!("  Backlinks (linked from):");
+            for bl in bls {
+                println!("    - [[{}]] in {}", bl.source_name, bl.context);
+            }
+        }
+
+        println!();
     }
 
     if match_count == 0 {
@@ -500,6 +627,19 @@ pub fn handle_read(vault_path: &Path, name: String) -> Result<(), String> {
 
     println!("=================================================");
     println!("Memory Name: {}", page.name);
+    let inferred_type = page.frontmatter.memory_type
+        .unwrap_or_else(|| {
+            if page.frontmatter.references.as_ref().map(|r| !r.is_empty()).unwrap_or(false) {
+                MemoryType::File
+            } else {
+                MemoryType::User
+            }
+        });
+    let type_str = match inferred_type {
+        MemoryType::File => "file",
+        MemoryType::User => "user",
+    };
+    println!("Type:        {}", type_str);
     if let Some(title) = &page.frontmatter.title {
         println!("Title:       {}", title);
     }
@@ -510,6 +650,35 @@ pub fn handle_read(vault_path: &Path, name: String) -> Result<(), String> {
         println!("Updated:     {}", ref_time);
     }
     println!("=================================================");
+
+    let mut is_outdated = false;
+    if inferred_type == MemoryType::File {
+        if let Some(refs) = &page.frontmatter.references {
+            for r in refs {
+                let code_path = workspace_root.join(&r.path);
+                if !code_path.exists() {
+                    is_outdated = true;
+                    break;
+                }
+                match calculate_file_hash(&code_path) {
+                    Ok(current_hash) => {
+                        if current_hash != r.hash {
+                            is_outdated = true;
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        is_outdated = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if is_outdated {
+        println!("WARNING: This memory page is potentially outdated due to code changes.");
+        println!("=================================================");
+    }
 
     // Verify references and print status
     if let Some(refs) = &page.frontmatter.references {
@@ -543,6 +712,20 @@ pub fn handle_read(vault_path: &Path, name: String) -> Result<(), String> {
         println!("Backlinks (what links here):");
         for bl in bls {
             println!("  - [[{}]] (in context: {})", bl.source_name, bl.context);
+        }
+        println!("=================================================");
+    }
+
+    // Print outgoing wiki-links
+    let outgoing = crate::parser::extract_wiki_links(&page.body);
+    if !outgoing.is_empty() {
+        println!("Outgoing Links (wiki-links in this page):");
+        let mut unique_outgoing = std::collections::HashSet::new();
+        for (target, _) in outgoing {
+            let target_normalized = crate::vault::normalize_memory_name(&target);
+            if unique_outgoing.insert(target_normalized.clone()) {
+                println!("  - [[{}]]", target);
+            }
         }
         println!("=================================================");
     }
@@ -581,6 +764,7 @@ pub fn handle_compile(vault_path: &Path, program: String, args: Vec<String>) -> 
         compiled_prompt.push_str(&format!("Arguments provided: {:?}\n\n", args));
     }
 
+    let workspace_root = get_workspace_root(vault_path);
     compiled_prompt.push_str("## Memories\n");
     compiled_prompt.push_str("Below are the current active memories from your database:\n");
     for page in &memories {
@@ -588,6 +772,44 @@ pub fn handle_compile(vault_path: &Path, program: String, args: Vec<String>) -> 
         if let Some(title) = &page.frontmatter.title {
             compiled_prompt.push_str(&format!("Title: {}\n", title));
         }
+
+        // Check if page is outdated:
+        let inferred_type = page.frontmatter.memory_type.clone()
+            .unwrap_or_else(|| {
+                if page.frontmatter.references.as_ref().map(|r| !r.is_empty()).unwrap_or(false) {
+                    MemoryType::File
+                } else {
+                    MemoryType::User
+                }
+            });
+        let mut is_outdated = false;
+        if inferred_type == MemoryType::File {
+            if let Some(refs) = &page.frontmatter.references {
+                for r in refs {
+                    let code_path = workspace_root.join(&r.path);
+                    if !code_path.exists() {
+                        is_outdated = true;
+                        break;
+                    }
+                    match calculate_file_hash(&code_path) {
+                        Ok(current_hash) => {
+                            if current_hash != r.hash {
+                                is_outdated = true;
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            is_outdated = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if is_outdated {
+            compiled_prompt.push_str("WARNING: This memory page is potentially outdated due to code changes.\n");
+        }
+
         compiled_prompt.push_str(&format!("Content:\n{}\n\n", page.body));
     }
 
@@ -626,10 +848,16 @@ This repository uses **Brainwares** (`bw`) for Obsidian-style markdown memory st
  
 You MUST follow these rules during your session:
 1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
-2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context. IMPORTANT: `bw query` performs a literal, case-insensitive substring match (it does NOT do semantic search or multi-word tokenized search). Do NOT query multi-word phrases (e.g., "input styling CSS border" will return 0 matches). Instead, search using single, simple keywords (e.g., `bw query "input"` or `bw query "border"`).
+2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context. Note that `bw query` supports tokenized multi-word search queries (words are matched across fields, and results are ranked by relevance).
 3. **Reference Maintenance**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, inspect the associated markdown note under `.brainwares/memories/`, update its contents to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to link and track them.
-4. **Clean State**: Keep the vault clean and verified before completing your task.
+4. **Dependency Mapping**: When adding or updating memory notes, you MUST scan the code file's imports and dependencies. Add double-bracket Obsidian-style wiki-links (e.g. `[[dependency-note-name]]`) in the memory page content to establish relationships between modules and tests. Do NOT assume dependencies follow the folder structure; map them based on code imports and usage to produce a complete dependency/brain map.
+5. **Clean State**: Keep the vault clean and verified before completing your task.
 "#;
+
+pub fn handle_rules() -> Result<(), String> {
+    println!("{}", AGENT_RULES_CONTENT);
+    Ok(())
+}
 
 pub fn handle_integrate() -> Result<(), String> {
     // 1. Configure Global Antigravity Integration
@@ -1006,6 +1234,7 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
             tags: Some(vec!["folder".to_string(), "index".to_string()]),
             references: if references.is_empty() { None } else { Some(references.clone()) },
             last_updated: Some(chrono::Utc::now().to_rfc3339()),
+            memory_type: Some(MemoryType::File),
         };
         
         // Build markdown body
@@ -1131,6 +1360,7 @@ pub fn handle_write(
                 references: Some(Vec::new()),
                 tags: Some(Vec::new()),
                 last_updated: None,
+                memory_type: None,
             },
             body: String::new(),
         }
@@ -1169,7 +1399,7 @@ mod tests {
         fs::write(&code_file_path, "fn main() {}").unwrap();
 
         let memory_name = "my-test-memory";
-        handle_add(&vault_path, memory_name.to_string(), None, None, false).unwrap();
+        handle_add(&vault_path, memory_name.to_string(), None, None, false, None).unwrap();
         handle_link(&vault_path, memory_name.to_string(), code_file_name.to_string()).unwrap();
 
         // Check reference exists
@@ -1211,8 +1441,8 @@ mod tests {
         // 3. Add memory notes and link
         let mem1 = "mem-one";
         let mem2 = "mem-two";
-        handle_add(&vault_path, mem1.to_string(), None, None, false).unwrap();
-        handle_add(&vault_path, mem2.to_string(), None, None, false).unwrap();
+        handle_add(&vault_path, mem1.to_string(), None, None, false, None).unwrap();
+        handle_add(&vault_path, mem2.to_string(), None, None, false, None).unwrap();
 
         handle_link(&vault_path, mem1.to_string(), code1.to_string()).unwrap();
         handle_link(&vault_path, mem2.to_string(), code2.to_string()).unwrap();
@@ -1289,6 +1519,81 @@ mod tests {
         // Manual tag must be preserved!
         assert_eq!(parsed_final.frontmatter.tags.as_ref().unwrap().len(), 1);
         assert_eq!(parsed_final.frontmatter.tags.as_ref().unwrap()[0], "manual-tag");
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_handle_remove() {
+        let temp_dir = std::env::temp_dir().join(format!("bw_test_remove_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let vault_path = temp_dir.join(".brainwares");
+        handle_init(&vault_path).unwrap();
+
+        let note_name = "test-delete-me";
+        handle_add(&vault_path, note_name.to_string(), None, None, false, None).unwrap();
+        let note_path = resolve_memory_path(&vault_path, note_name).unwrap();
+        assert!(note_path.exists());
+
+        // Remove the note
+        handle_remove(&vault_path, note_name.to_string(), false).unwrap();
+        assert!(!note_path.exists());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_memory_type_status() {
+        let temp_dir = std::env::temp_dir().join(format!("bw_test_types_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let vault_path = temp_dir.join(".brainwares");
+        handle_init(&vault_path).unwrap();
+
+        // 1. Add file memory (should check references)
+        let file_mem = "file-memory";
+        let code_file = "code.rs";
+        let code_path = temp_dir.join(code_file);
+        fs::write(&code_path, "fn test() {}").unwrap();
+
+        handle_add(&vault_path, file_mem.to_string(), None, None, false, Some("file".to_string())).unwrap();
+        handle_link(&vault_path, file_mem.to_string(), code_file.to_string()).unwrap();
+
+        // Delete it to make it missing/outdated
+        fs::remove_file(&code_path).unwrap();
+
+        // 2. Add user memory (should skip reference checks)
+        let user_mem = "user-memory";
+        handle_add(&vault_path, user_mem.to_string(), None, None, false, Some("user".to_string())).unwrap();
+        
+        // Manually add references to user-memory to show that it is ignored
+        let user_file = resolve_memory_path(&vault_path, user_mem).unwrap();
+        let user_content = fs::read_to_string(&user_file).unwrap();
+        let mut user_page = parse_memory_file(&user_content, &user_file).unwrap();
+        user_page.frontmatter.references = Some(vec![CodeReference {
+            path: "nonexistent.rs".to_string(),
+            hash: "invalidhash".to_string(),
+        }]);
+        let serialized_user = serialize_memory_file(&user_page).unwrap();
+        fs::write(&user_file, serialized_user).unwrap();
+
+        let memories = load_memories(&vault_path).unwrap();
+        let status = check_vault_status(&vault_path, &memories);
+
+        // Outdated memories should only be 1 (file-memory), as user-memory references are ignored
+        assert_eq!(status.outdated_memories_count, 1);
+        
+        let file_res = status.memories.iter().find(|m| m.memory_name == file_mem).unwrap();
+        assert_eq!(file_res.memory_type, MemoryType::File);
+        assert!(!file_res.references.is_empty());
+
+        let user_res = status.memories.iter().find(|m| m.memory_name == user_mem).unwrap();
+        assert_eq!(user_res.memory_type, MemoryType::User);
+        // Even though user-memory has references, they should not have been checked in status
+        assert!(user_res.references.is_empty());
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);

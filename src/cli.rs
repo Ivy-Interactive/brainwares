@@ -30,11 +30,14 @@ pub enum Commands {
         #[arg(short, long, help = "Comma-separated list of tags")]
         tags: Option<String>,
         
-        #[arg(short, long, help = "Title of the memory note")]
+        #[arg(long, help = "Title of the memory note")]
         title: Option<String>,
 
         #[arg(short, long, help = "Create the note in the user-wide global vault memories directory")]
         global: bool,
+
+        #[arg(long = "type", help = "Type of memory note ('file' or 'user')")]
+        memory_type: Option<String>,
     },
 
     #[command(about = "Link a code file reference to a memory note")]
@@ -85,6 +88,9 @@ pub enum Commands {
     #[command(about = "Verify that Brainwares CLI and agent integrations are set up correctly")]
     Doctor,
 
+    #[command(about = "Get the markdown rules/instructions for using the Brainwares CLI")]
+    Rules,
+
     #[command(about = "Write content directly to a memory note")]
     Write {
         #[arg(help = "Name or file path of the memory note")]
@@ -96,4 +102,13 @@ pub enum Commands {
 
     #[command(about = "Scan top-level workspace directories and bootstrap a markdown note for each")]
     Index,
+
+    #[command(about = "Remove a memory note from the vault")]
+    Remove {
+        #[arg(help = "Name or file path of the memory note to remove")]
+        name: String,
+
+        #[arg(short, long, help = "Remove the note from the user-wide global memories directory")]
+        global: bool,
+    },
 }

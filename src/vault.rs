@@ -514,13 +514,38 @@ pub fn get_backlinks(memories: &[MemoryPage]) -> HashMap<String, Vec<Backlink>> 
         let source_name = source_page.name.clone();
         let source_path = source_page.file_path.to_string_lossy().to_string();
 
-        // Scan page body line by line to collect context
+        // 1. Scan frontmatter relations
+        if let Some(relations) = &source_page.frontmatter.relations {
+            for target in relations {
+                let target_normalized = normalize_memory_name(target);
+                let context = format!("Frontmatter relations: {}", target);
+                let backlink = Backlink {
+                    source_name: source_name.clone(),
+                    source_path: source_path.clone(),
+                    context,
+                };
+                backlinks_map
+                    .entry(target_normalized)
+                    .or_default()
+                    .push(backlink);
+            }
+        }
+
+        // 2. Scan page body line by line to collect context for inline wiki-links (backwards compatibility)
         for (line_num, line) in source_page.body.lines().enumerate() {
             let extracted = crate::parser::extract_wiki_links(line);
             for (target_name, _raw_match) in extracted {
                 // Normalize target name for case-insensitive, space/hyphen robust matching
                 let target_normalized = normalize_memory_name(&target_name);
                 
+                // Avoid duplicating if already present in frontmatter relations
+                let already_linked = source_page.frontmatter.relations.as_ref()
+                    .map(|r| r.iter().any(|x| normalize_memory_name(x) == target_normalized))
+                    .unwrap_or(false);
+                if already_linked {
+                    continue;
+                }
+
                 let context = format!("Line {}: {}", line_num + 1, line.trim());
                 let backlink = Backlink {
                     source_name: source_name.clone(),

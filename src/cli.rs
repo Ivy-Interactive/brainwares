@@ -49,6 +49,18 @@ pub enum Commands {
         code_file: String,
     },
 
+    #[command(about = "Declare a relation/connection between two memory notes")]
+    Relate {
+        #[arg(help = "Name or file path of the memory note")]
+        memory: String,
+        
+        #[arg(help = "Name or file path of the target memory note to relate")]
+        target: String,
+
+        #[arg(short, long, help = "Remove the relation instead of adding it")]
+        remove: bool,
+    },
+
     #[command(about = "Update code references in a memory note to their current hashes")]
     Update {
         #[arg(help = "Name or file path of the memory note")]

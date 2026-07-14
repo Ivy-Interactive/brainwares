@@ -209,6 +209,7 @@ pub fn handle_add(
         tags: Some(parsed_tags),
         last_updated: Some(Utc::now().to_rfc3339()),
         memory_type: parsed_type,
+        relations: None,
     };
 
     let page = MemoryPage {
@@ -326,6 +327,77 @@ pub fn handle_link(vault_path: &Path, memory: String, code_file: String) -> Resu
         .map_err(|e| format!("Failed to update memory file: {}", e))?;
 
     println!("SUCCESS: Reference linked in memory '{}'", page.name);
+    Ok(())
+}
+
+pub fn handle_relate(
+    vault_path: &Path,
+    memory: String,
+    target: String,
+    remove: bool,
+) -> Result<(), String> {
+    let memory_file = resolve_memory_path(vault_path, &memory)?;
+    let target_file = resolve_memory_path(vault_path, &target)?;
+
+    if memory_file == target_file {
+        return Err("Cannot relate a memory note to itself.".to_string());
+    }
+
+    // 1. Load and parse source page
+    let content_src = fs::read_to_string(&memory_file)
+        .map_err(|e| format!("Failed to read memory file '{:?}': {}", memory_file, e))?;
+    let mut page_src = parse_memory_file(&content_src, &memory_file)?;
+
+    // 2. Load and parse target page
+    let content_tgt = fs::read_to_string(&target_file)
+        .map_err(|e| format!("Failed to read target file '{:?}': {}", target_file, e))?;
+    let mut page_tgt = parse_memory_file(&content_tgt, &target_file)?;
+
+    let src_name = page_src.name.clone();
+    let tgt_name = page_tgt.name.clone();
+
+    if remove {
+        // Remove tgt from src's relations
+        if let Some(relations) = &mut page_src.frontmatter.relations {
+            relations.retain(|r| crate::vault::normalize_memory_name(r) != crate::vault::normalize_memory_name(&tgt_name));
+        }
+        // Remove src from tgt's relations
+        if let Some(relations) = &mut page_tgt.frontmatter.relations {
+            relations.retain(|r| crate::vault::normalize_memory_name(r) != crate::vault::normalize_memory_name(&src_name));
+        }
+        println!("Removing relation between '{}' and '{}'", src_name, tgt_name);
+    } else {
+        // Add tgt to src's relations
+        let mut rels_src = page_src.frontmatter.relations.unwrap_or_default();
+        if !rels_src.iter().any(|r| crate::vault::normalize_memory_name(r) == crate::vault::normalize_memory_name(&tgt_name)) {
+            rels_src.push(tgt_name.clone());
+        }
+        page_src.frontmatter.relations = Some(rels_src);
+
+        // Add src to tgt's relations
+        let mut rels_tgt = page_tgt.frontmatter.relations.unwrap_or_default();
+        if !rels_tgt.iter().any(|r| crate::vault::normalize_memory_name(r) == crate::vault::normalize_memory_name(&src_name)) {
+            rels_tgt.push(src_name.clone());
+        }
+        page_tgt.frontmatter.relations = Some(rels_tgt);
+
+        println!("Adding relation between '{}' and '{}'", src_name, tgt_name);
+    }
+
+    page_src.frontmatter.last_updated = Some(Utc::now().to_rfc3339());
+    page_tgt.frontmatter.last_updated = Some(Utc::now().to_rfc3339());
+
+    // Write source page
+    let serialized_src = serialize_memory_file(&page_src)?;
+    fs::write(&memory_file, serialized_src)
+        .map_err(|e| format!("Failed to write source memory file: {}", e))?;
+
+    // Write target page
+    let serialized_tgt = serialize_memory_file(&page_tgt)?;
+    fs::write(&target_file, serialized_tgt)
+        .map_err(|e| format!("Failed to write target memory file: {}", e))?;
+
+    println!("SUCCESS: Updated relations between '{}' and '{}'", src_name, tgt_name);
     Ok(())
 }
 
@@ -716,6 +788,17 @@ pub fn handle_read(vault_path: &Path, name: String) -> Result<(), String> {
         println!("=================================================");
     }
 
+    // Print relations (outgoing links)
+    if let Some(relations) = &page.frontmatter.relations {
+        if !relations.is_empty() {
+            println!("Outgoing Relations:");
+            for rel in relations {
+                println!("  - {}", rel);
+            }
+            println!("=================================================");
+        }
+    }
+
     // Print outgoing wiki-links
     let outgoing = crate::parser::extract_wiki_links(&page.body);
     if !outgoing.is_empty() {
@@ -723,6 +806,12 @@ pub fn handle_read(vault_path: &Path, name: String) -> Result<(), String> {
         let mut unique_outgoing = std::collections::HashSet::new();
         for (target, _) in outgoing {
             let target_normalized = crate::vault::normalize_memory_name(&target);
+            let already_related = page.frontmatter.relations.as_ref()
+                .map(|r| r.iter().any(|x| crate::vault::normalize_memory_name(x) == target_normalized))
+                .unwrap_or(false);
+            if already_related {
+                continue;
+            }
             if unique_outgoing.insert(target_normalized.clone()) {
                 println!("  - [[{}]]", target);
             }
@@ -832,13 +921,14 @@ Whenever a `.brainwares` vault directory is detected in the active workspace, th
  
 1. **Context Discovery**:
    - Before executing tasks, check for the presence of a `.brainwares/` folder.
-   - If present, run `bw status` to scan for any outdated references or broken wiki-links.
+   - If present, run `bw status` to scan for any outdated references or broken links.
    - Automatically load and read relevant memories using `bw read <note_name>` or `bw query <term>` to gain full context about coding guidelines, rules, or system details.
  
 2. **Reference Maintenance & Reflection**:
    - After completing edits on any codebase files, run `bw status` to see if your changes caused any memory notes to become outdated.
    - If references are outdated, read the memory page with `bw read <note_name>`, update its content by running `bw write <note_name>` (e.g., using `echo "..." | bw write <note_name>`), and run `bw update <note_name>` to synchronize the hashes. Do NOT write or edit the memory markdown files directly on the filesystem.
    - If you created any new source or configuration files, proactively document them in a memory note (creating a new one if necessary using `bw add <note_name>`) and run `bw link <note_name> <file_path>` to register their initial hashes.
+   - **Memory Relations**: When creating or updating memory notes, identify imported dependencies or related notes and relate them using the `bw relate <source> <target>` CLI command. Do NOT use inline double-bracket wiki-links `[[note]]` in the note body; all connections/relations must be declared via the CLI and stored in the frontmatter `relations` list at the top of the files.
    - Keep the vault clean and green before completing your turn.
 "#;
 
@@ -850,7 +940,7 @@ You MUST follow these rules during your session:
 1. **Status Audit**: Before writing or changing code, run `bw status` to check if there are any outdated memory files or broken links.
 2. **Context Resolution**: Read relevant memories using `bw read <note_name>` or search memories with `bw query <term>` to gain full context. Note that `bw query` supports tokenized multi-word search queries (words are matched across fields, and results are ranked by relevance).
 3. **Reference Maintenance & Edits**: After modifying any code files in the codebase, run `bw status`. If any references are outdated, read the memory page using `bw read <note_name>` and update its contents by running `bw write <note_name>` (e.g. `echo "new content" | bw write <note_name>`), and run `bw update <note_name>` to synchronize the hashes. Do NOT write or edit memory markdown files directly on the filesystem. If you created any new source or configuration files, document them in a memory note (creating a new one if necessary using `bw add <note_name>`) and run `bw link <note_name> <file_path>` to link and track them.
-4. **Dependency Mapping**: When adding or updating memory notes, you MUST scan the code file's imports and dependencies. Add double-bracket Obsidian-style wiki-links (e.g. `[[dependency-note-name]]`) in the memory page content to establish relationships between modules and tests. Do NOT assume dependencies follow the folder structure; map them based on code imports and usage to produce a complete dependency/brain map.
+4. **Dependency & Memory Relations**: When adding or updating memory notes, scan the code file's imports and dependencies. You MUST declare relations to other memory notes (dependencies, tests, etc.) ONLY by using the CLI command: `bw relate <memory> <target>` (or `bw relate <memory> <target> --remove` to delete a relation). This stores relations in the frontmatter at the top of the files. Do NOT write inline double-bracket wiki-links (`[[dependency-note-name]]`) in the note body.
 5. **Clean State**: Keep the vault clean and verified before completing your task.
 "#;
 
@@ -872,22 +962,6 @@ pub fn handle_integrate() -> Result<(), String> {
         }
     }
 
-    let old_global_rules_str = r#"# Antigravity Global Rules
-
-## Brainwares Workspace Integration
-
-Whenever a `.brainwares` vault directory is detected in the active workspace, the agent MUST automatically hook up with it:
-
-1. **Context Discovery**:
-   - Before executing tasks, check for the presence of a `.brainwares/` folder.
-   - If present, run `bw status` to scan for any outdated references or broken wiki-links.
-   - Automatically load and read relevant memories using `bw read <note_name>` or `bw query <term>` to gain full context about coding guidelines, rules, or system details.
-
-2. **Reference Maintenance & Reflection**:
-   - After completing edits on any codebase files, run `bw status` to see if your changes caused any memory notes to become outdated.
-   - If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.
-   - Keep the vault clean and green before completing your turn."#;
-
     if gemini_config_dir.exists() {
         let agents_md_path = gemini_config_dir.join("AGENTS.md");
         let mut current_content = String::new();
@@ -903,21 +977,15 @@ Whenever a `.brainwares` vault directory is detected in the active workspace, th
             if fs::write(&agents_md_path, new_content).is_ok() {
                 println!("SUCCESS: Configured global Antigravity rules at {:?}", agents_md_path);
             }
-        } else if current_content.contains(old_global_rules_str) {
-            let updated = current_content.replace(old_global_rules_str, GLOBAL_RULES_CONTENT);
-            if fs::write(&agents_md_path, updated).is_ok() {
-                println!("SUCCESS: Updated global Antigravity rules at {:?}", agents_md_path);
-            }
-        } else if !current_content.contains("proactively document them") {
-            let old_short = "If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.\n   - Keep the vault clean and green before completing your turn.";
-            let new_short = "If references are outdated, inspect the associated markdown memory file, update its content to reflect the new codebase state, and run `bw update <note_name>` to synchronize the hashes.\n   - If you created any new source or configuration files, proactively document them in a memory note (creating a new one if necessary) and run `bw link <note_name> <file_path>` to register their initial hashes.\n   - Keep the vault clean and green before completing your turn.";
-            if current_content.contains(old_short) {
-                let updated = current_content.replace(old_short, new_short);
-                if fs::write(&agents_md_path, updated).is_ok() {
+        } else if let Some(start_idx) = current_content.find("# Antigravity Global Rules") {
+            if !current_content.contains("Memory Relations: When creating or updating memory notes") {
+                let prefix = &current_content[..start_idx];
+                let new_content = format!("{}{}", prefix, GLOBAL_RULES_CONTENT);
+                if fs::write(&agents_md_path, new_content).is_ok() {
                     println!("SUCCESS: Updated global Antigravity rules at {:?}", agents_md_path);
                 }
             } else {
-                println!("INFO: Global Antigravity rules already configured (custom format).");
+                println!("INFO: Global Antigravity rules already configured.");
             }
         } else {
             println!("INFO: Global Antigravity rules already configured.");
@@ -1235,6 +1303,7 @@ pub fn handle_index(vault_path: &Path) -> Result<(), String> {
             references: if references.is_empty() { None } else { Some(references.clone()) },
             last_updated: Some(chrono::Utc::now().to_rfc3339()),
             memory_type: Some(MemoryType::File),
+            relations: None,
         };
         
         // Build markdown body
@@ -1361,6 +1430,7 @@ pub fn handle_write(
                 tags: Some(Vec::new()),
                 last_updated: None,
                 memory_type: None,
+                relations: None,
             },
             body: String::new(),
         }
@@ -1596,6 +1666,48 @@ mod tests {
         assert!(user_res.references.is_empty());
 
         // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_handle_relate() {
+        let temp_dir = std::env::temp_dir().join(format!("bw_test_relate_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let vault_path = temp_dir.join(".brainwares");
+        handle_init(&vault_path).unwrap();
+
+        let mem1 = "note-a";
+        let mem2 = "note-b";
+        handle_add(&vault_path, mem1.to_string(), None, None, false, None).unwrap();
+        handle_add(&vault_path, mem2.to_string(), None, None, false, None).unwrap();
+
+        // Add relation
+        handle_relate(&vault_path, mem1.to_string(), mem2.to_string(), false).unwrap();
+
+        // Verify bidirectional relation
+        let file1 = resolve_memory_path(&vault_path, mem1).unwrap();
+        let content1 = fs::read_to_string(&file1).unwrap();
+        let page1 = parse_memory_file(&content1, &file1).unwrap();
+        assert!(page1.frontmatter.relations.as_ref().unwrap().contains(&mem2.to_string()));
+
+        let file2 = resolve_memory_path(&vault_path, mem2).unwrap();
+        let content2 = fs::read_to_string(&file2).unwrap();
+        let page2 = parse_memory_file(&content2, &file2).unwrap();
+        assert!(page2.frontmatter.relations.as_ref().unwrap().contains(&mem1.to_string()));
+
+        // Remove relation
+        handle_relate(&vault_path, mem1.to_string(), mem2.to_string(), true).unwrap();
+
+        // Verify relation is removed
+        let content1_after = fs::read_to_string(&file1).unwrap();
+        let page1_after = parse_memory_file(&content1_after, &file1).unwrap();
+        assert!(!page1_after.frontmatter.relations.as_ref().unwrap().contains(&mem2.to_string()));
+
+        let content2_after = fs::read_to_string(&file2).unwrap();
+        let page2_after = parse_memory_file(&content2_after, &file2).unwrap();
+        assert!(!page2_after.frontmatter.relations.as_ref().unwrap().contains(&mem1.to_string()));
+
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }

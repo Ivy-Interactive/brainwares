@@ -101,19 +101,32 @@ pub fn check_vault_status(vault_path: &Path, memories: &[MemoryPage]) -> VaultSt
             }
         }
 
-        // 2. Check wiki-links
-        let wiki_links = crate::parser::extract_wiki_links(&page.body);
+        // 2. Check wiki-links and frontmatter relations
         let mut broken_links = Vec::new();
+        let mut all_links = Vec::new();
+
+        if let Some(relations) = &page.frontmatter.relations {
+            for target in relations {
+                all_links.push(target.clone());
+            }
+        }
+
+        let wiki_links = crate::parser::extract_wiki_links(&page.body);
         for (target, _raw) in wiki_links {
+            all_links.push(target);
+        }
+
+        for target in all_links {
             let normalized = crate::vault::normalize_memory_name(&target);
             // Check if the target is a memory page or a file in the workspace
-            // Typically wiki-links target other memory files
             if !existing_names.contains(&normalized) {
                 // As a fallback, check if it's a direct file path relative to workspace root
                 let direct_file = workspace_root.join(&target);
                 if !direct_file.exists() {
-                    broken_links.push(target);
-                    broken_links_count += 1;
+                    if !broken_links.contains(&target) {
+                        broken_links.push(target);
+                        broken_links_count += 1;
+                    }
                 }
             }
         }

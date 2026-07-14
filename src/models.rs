@@ -40,6 +40,7 @@ pub struct Frontmatter {
     pub last_updated: Option<String>,
     #[serde(rename = "type")]
     pub memory_type: Option<MemoryType>,
+    pub relations: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

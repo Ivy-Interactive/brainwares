@@ -59,6 +59,16 @@ fn main() {
                 commands::handle_link(&vault_path, memory, code_file)
             }
         }
+        Commands::Relate { memory, target, remove } => {
+            if !vault_path.is_dir() {
+                Err(format!(
+                    "Vault directory {:?} does not exist. Initialize it first using 'bw init'.",
+                    vault_path
+                ))
+            } else {
+                commands::handle_relate(&vault_path, memory, target, remove)
+            }
+        }
         Commands::Update { memory, code_file } => {
             if !vault_path.is_dir() {
                 Err(format!(

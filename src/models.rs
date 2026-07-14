@@ -25,12 +25,21 @@ pub struct CodeReference {
     pub hash: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryType {
+    File,
+    User,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Frontmatter {
     pub title: Option<String>,
     pub references: Option<Vec<CodeReference>>,
     pub tags: Option<Vec<String>>,
     pub last_updated: Option<String>,
+    #[serde(rename = "type")]
+    pub memory_type: Option<MemoryType>,
 }
 
 #[derive(Debug, Clone)]

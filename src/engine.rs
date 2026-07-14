@@ -1,5 +1,5 @@
 use crate::hash::calculate_file_hash;
-use crate::models::MemoryPage;
+use crate::models::{MemoryPage, MemoryType};
 use crate::vault::{get_backlinks, get_workspace_root};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,7 @@ pub struct FileCheckResult {
 pub struct MemoryCheckResult {
     pub memory_name: String,
     pub file_path: PathBuf,
+    pub memory_type: MemoryType,
     pub references: Vec<FileCheckResult>,
     pub broken_links: Vec<String>, // list of targets that don't exist
     pub is_orphan: bool,
@@ -55,37 +56,48 @@ pub fn check_vault_status(vault_path: &Path, memories: &[MemoryPage]) -> VaultSt
         let mut references_status = Vec::new();
         let mut has_outdated_or_missing = false;
 
-        // 1. Check code references
-        if let Some(refs) = &page.frontmatter.references {
-            for r in refs {
-                let code_file_path = workspace_root.join(&r.path);
-                let status = if !code_file_path.exists() {
-                    has_outdated_or_missing = true;
-                    ReferenceStatus::Missing
+        let memory_type = page.frontmatter.memory_type
+            .unwrap_or_else(|| {
+                if page.frontmatter.references.as_ref().map(|r| !r.is_empty()).unwrap_or(false) {
+                    MemoryType::File
                 } else {
-                    match calculate_file_hash(&code_file_path) {
-                        Ok(current_hash) => {
-                            if current_hash == r.hash {
-                                ReferenceStatus::Ok
-                            } else {
-                                has_outdated_or_missing = true;
-                                ReferenceStatus::Outdated {
-                                    stored: r.hash.clone(),
-                                    current: current_hash,
+                    MemoryType::User
+                }
+            });
+
+        // 1. Check code references (only for file-based memories)
+        if memory_type == MemoryType::File {
+            if let Some(refs) = &page.frontmatter.references {
+                for r in refs {
+                    let code_file_path = workspace_root.join(&r.path);
+                    let status = if !code_file_path.exists() {
+                        has_outdated_or_missing = true;
+                        ReferenceStatus::Missing
+                    } else {
+                        match calculate_file_hash(&code_file_path) {
+                            Ok(current_hash) => {
+                                if current_hash == r.hash {
+                                    ReferenceStatus::Ok
+                                } else {
+                                    has_outdated_or_missing = true;
+                                    ReferenceStatus::Outdated {
+                                        stored: r.hash.clone(),
+                                        current: current_hash,
+                                    }
                                 }
                             }
+                            Err(_) => {
+                                has_outdated_or_missing = true;
+                                ReferenceStatus::Missing
+                            }
                         }
-                        Err(_) => {
-                            has_outdated_or_missing = true;
-                            ReferenceStatus::Missing
-                        }
-                    }
-                };
+                    };
 
-                references_status.push(FileCheckResult {
-                    path: r.path.clone(),
-                    status,
-                });
+                    references_status.push(FileCheckResult {
+                        path: r.path.clone(),
+                        status,
+                    });
+                }
             }
         }
 
@@ -129,6 +141,7 @@ pub fn check_vault_status(vault_path: &Path, memories: &[MemoryPage]) -> VaultSt
         results.push(MemoryCheckResult {
             memory_name: page.name.clone(),
             file_path: page.file_path.clone(),
+            memory_type,
             references: references_status,
             broken_links,
             is_orphan,

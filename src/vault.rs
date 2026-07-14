@@ -451,16 +451,28 @@ pub fn load_memories(vault_path: &Path) -> Result<Vec<MemoryPage>, String> {
 
     // 2. Load Global Memories
     if let Some(global_memories_dir) = get_global_memories_dir() {
-        if global_memories_dir.is_dir() {
+        let target_dir = if let Some(proj_name) = get_project_name() {
+            global_memories_dir.join(&proj_name)
+        } else {
+            global_memories_dir.clone()
+        };
+
+        if target_dir.is_dir() {
             let mut files = Vec::new();
-            find_markdown_files(&global_memories_dir, &mut files)?;
+            find_markdown_files(&target_dir, &mut files)?;
             for path in files {
                 let content = fs::read_to_string(&path)
                     .map_err(|e| format!("Failed to read global memory file {:?}: {}", path, e))?;
                 let mut page = parse_memory_file(&content, &path)?;
                 
                 if let Ok(rel_path) = path.strip_prefix(&global_memories_dir) {
-                    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                    let mut final_rel = rel_path;
+                    if let Some(proj_name) = get_project_name() {
+                        if let Ok(project_rel) = rel_path.strip_prefix(&proj_name) {
+                            final_rel = project_rel;
+                        }
+                    }
+                    let rel_str = final_rel.to_string_lossy().replace('\\', "/");
                     let name = if rel_str.ends_with(".md") {
                         &rel_str[..rel_str.len() - 3]
                     } else {

@@ -4,9 +4,9 @@ references:
 - path: src/models.rs
   hash: 79d808c465fb5f14e2b293f7e198ccb66a3a9ce22939fc4922cf37acdfad0ad0
 - path: src/commands.rs
-  hash: e43ec8bf2fa826216a2565b9df6ebf95498a401636c88487ca643b56596deb0c
+  hash: dcd64ac77c49fb0f68dbcbca25ed6902be8f6144a2854847faa2d1506445b6d5
 - path: src/main.rs
-  hash: a71db57b585c8de734d69ab10ca7d9e332b828fa55fe93e9740fa0eb5af3f1e6
+  hash: ab0d1da1ceddc95423a54ffe3d63c6b3caf2f464bd8e717b68b46ecb13b68b69
 - path: src/parser.rs
   hash: ed47de0de466de22635ff16cd236dffadde6e4c568b513a8623a0d22d0968ae1
 - path: src/hash.rs
@@ -14,13 +14,13 @@ references:
 - path: src/vault.rs
   hash: 8f1de7d148b6d8b2a59241e40269c11efe6372f25d8ba91a639b9b794462fed0
 - path: src/cli.rs
-  hash: 9245eb8c02052f79f13b16f4c34eb05f88611fd4d13ed07514607c52cf8e7d3c
+  hash: 1f47203f8c094c12e99a88c24a97189a7759a181d07b7c7f0158963ae2e3225b
 - path: src/engine.rs
   hash: f5ed302035757cf17f6ceabbbffc2858442725ddf6928d2af4c827b3518b2dd2
 tags:
 - folder
 - index
-last_updated: 2026-07-14T11:31:33.099990+00:00
+last_updated: 2026-07-14T11:43:10.433666+00:00
 type: null
 ---
 

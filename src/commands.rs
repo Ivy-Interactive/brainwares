@@ -347,11 +347,13 @@ pub fn handle_relate(
     let content_src = fs::read_to_string(&memory_file)
         .map_err(|e| format!("Failed to read memory file '{:?}': {}", memory_file, e))?;
     let mut page_src = parse_memory_file(&content_src, &memory_file)?;
+    page_src.name = crate::vault::compute_memory_name(vault_path, &memory_file);
 
     // 2. Load and parse target page
     let content_tgt = fs::read_to_string(&target_file)
         .map_err(|e| format!("Failed to read target file '{:?}': {}", target_file, e))?;
     let mut page_tgt = parse_memory_file(&content_tgt, &target_file)?;
+    page_tgt.name = crate::vault::compute_memory_name(vault_path, &target_file);
 
     let src_name = page_src.name.clone();
     let tgt_name = page_tgt.name.clone();

@@ -627,3 +627,46 @@ pub fn load_gitignore_patterns(workspace_root: &Path) -> Vec<String> {
     patterns
 }
 
+pub fn compute_memory_name(vault_path: &Path, file_path: &Path) -> String {
+    let local_memories_dir = vault_path.join("memories");
+    let global_memories_dir = get_global_memories_dir();
+
+    if let Ok(rel_path) = file_path.strip_prefix(&local_memories_dir) {
+        let mut final_rel = rel_path;
+        if let Some(proj_name) = get_project_name() {
+            if let Ok(project_rel) = rel_path.strip_prefix(&proj_name) {
+                final_rel = project_rel;
+            }
+        }
+        let rel_str = final_rel.to_string_lossy().replace('\\', "/");
+        if rel_str.ends_with(".md") {
+            return rel_str[..rel_str.len() - 3].to_string();
+        } else {
+            return rel_str.to_string();
+        }
+    }
+
+    if let Some(ref global_dir) = global_memories_dir {
+        if let Ok(rel_path) = file_path.strip_prefix(global_dir) {
+            let mut final_rel = rel_path;
+            if let Some(proj_name) = get_project_name() {
+                if let Ok(project_rel) = rel_path.strip_prefix(&proj_name) {
+                    final_rel = project_rel;
+                }
+            }
+            let rel_str = final_rel.to_string_lossy().replace('\\', "/");
+            if rel_str.ends_with(".md") {
+                return rel_str[..rel_str.len() - 3].to_string();
+            } else {
+                return rel_str.to_string();
+            }
+        }
+    }
+
+    file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
